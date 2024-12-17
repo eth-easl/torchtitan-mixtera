@@ -111,18 +111,38 @@ def main(job_config: JobConfig):
 
     coordinate = world_mesh.get_coordinate()
     mesh_dim_names = world_mesh.mesh_dim_names
-    mesh_sizes = world_mesh.size_per_dim()
+    mesh_sizes = world_mesh.mesh.shape
+    dp_dim_names = ['dp_replicate', 'dp_shard'] # i dont think this is fully correct looking at device_mesh.py - this breaks down when ussing pp/cp/tp or sth, the names are not like that.
 
     # Map dimension names to indices and sizes
     coord_dict = dict(zip(mesh_dim_names, coordinate))
     size_dict = dict(zip(mesh_dim_names, mesh_sizes))
 
-    # Get dp_group_id (data parallel group ID)
-    dp_group_id = coord_dict.get("dp", 0)  # Default to 0 if dp not enabled
-    assert dp_group_id == dp_rank
+    dp_ranks = []
+    dp_sizes = []
+    for dp_dim_name in dp_dim_names:
+        if dp_dim_name in mesh_dim_names:
+            dp_ranks.append(coord_dict[dp_dim_name])
+            dp_sizes.append(size_dict[dp_dim_name])
+        else:
+            dp_ranks.append(0)
+            dp_sizes.append(1)
 
-    # Compute node_id (unique index within model parallel group)
-    non_dp_dims = [dim for dim in mesh_dim_names if dim != "dp"]
+    # Compute dp_group_id
+    dp_group_id = 0
+    multiplier = 1
+    for rank, size in zip(reversed(dp_ranks), reversed(dp_sizes)):
+        dp_group_id += rank * multiplier
+        multiplier *= size
+
+    # Compute dp_degree
+    dp_degree_mix = 1
+    for size in dp_sizes:
+        dp_degree_mix *= size # would 
+
+    # Non-data-parallel dimensions
+    non_dp_dims = [dim for dim in mesh_dim_names if dim not in dp_dim_names]
+
     node_id = 0
     multiplier = 1
     for dim_name in reversed(non_dp_dims):
@@ -136,9 +156,12 @@ def main(job_config: JobConfig):
     for dim_name in non_dp_dims:
         nodes_per_dp_group *= size_dict[dim_name]
 
+    logger.info(f"dp_group_id: {dp_group_id} nodes_per_dp_group: {nodes_per_dp_group} dp_degree: {dp_degree} dp_degree_mix: {dp_degree_mix} node_id: {node_id} ")
+
     assert nodes_per_dp_group == world_size // dp_degree
     assert nodes_per_dp_group == parallel_dims.non_data_parallel_size
     assert nodes_per_dp_group * dp_degree == world_size
+    assert dp_degree_mix == dp_degree # probably not true. for some reason they dont differentiate between shareded and replicated
 
     logger.info(f"dp_group_id: {dp_group_id}, dp_degree: {dp_degree}, node_id: {node_id}, nodes_per_dp_group: {nodes_per_dp_group}")
 
