@@ -437,7 +437,7 @@ def main(job_config: JobConfig):
                     if per_domain_loss_module.has_per_domain_loss:
                         with torch.no_grad():
                             losses_tensor, counts_tensor, max_id_tensor = per_domain_loss_module.get_per_domain_stats()
-                            max_handle = funcol.all_reduce(max_id_tensor, reduceOp=c10d.ReduceOp.MAX.name, async_op=True, group=dp_mesh) # dp mesh vs dp group?
+                            max_handle = torch.distributed.all_reduce(max_id_tensor, reduceOp=torch.distributed.ReduceOp.MAX, async_op=True, group=dp_mesh) # dp mesh vs dp group?
                             per_domain_loss_module.reset_per_domain_stats()
                             max_handle.wait()
                             max_domain_id = max_id_tensor.item()
@@ -449,8 +449,8 @@ def main(job_config: JobConfig):
                                 counts_tensor = torch.cat(
                                     [counts_tensor, torch.zeros(new_size, dtype=counts_tensor.dtype, device=counts_tensor.device)], dim=0)
 
-                            handle_losses = funcol.all_reduce(losses_tensor, op=c10d.ReduceOp.SUM.name, async_op=True, group=dp_mesh)
-                            handle_counts = funcol.all_reduce(counts_tensor, op=c10d.ReduceOp.SUM.name, async_op=True, group=dp_mesh)
+                            handle_losses = torch.distributed.all_reduce(losses_tensor, op=torch.distributed.ReduceOp.SUM, async_op=True, group=dp_mesh)
+                            handle_counts = torch.distributed.all_reduce(counts_tensor, op=torch.distributed.ReduceOp.SUM, async_op=True, group=dp_mesh)
 
                     init_async_time = time.perf_counter() - init_async_start
 
