@@ -442,138 +442,138 @@ def main(job_config: JobConfig):
             optimizers.step()
             lr_schedulers.step()
 
-        if per_domain_loss_module.has_per_domain_loss:
-            # First, all-reduce max_domain_id to get global_max_domain_id
-            max_domain_id_tensor = per_domain_loss_module.max_domain_id.clone()
-            if parallel_dims.dp_enabled:
-                torch.distributed.all_reduce(max_domain_id_tensor, op=torch.distributed.ReduceOp.MAX, group=dp_group)
-            global_max_domain_id = max_domain_id_tensor.item()
-
-            # Resize losses_tensor and counts_tensor if needed
-            num_domains = global_max_domain_id + 1
-            if num_domains > per_domain_loss_module.losses_tensor.size(0):
-                extra_size = num_domains - per_domain_loss_module.losses_tensor.size(0)
-                per_domain_loss_module.losses_tensor = torch.cat([
-                    per_domain_loss_module.losses_tensor,
-                    torch.zeros(extra_size, dtype=per_domain_loss_module.losses_tensor.dtype, device=per_domain_loss_module.device)
-                ], dim=0)
-                per_domain_loss_module.counts_tensor = torch.cat([
-                    per_domain_loss_module.counts_tensor,
-                    torch.zeros(extra_size, dtype=per_domain_loss_module.counts_tensor.dtype, device=per_domain_loss_module.device)
-                ], dim=0)
-
-            # Now perform all-reduce on losses_tensor and counts_tensor
-            if parallel_dims.dp_enabled:
-                torch.distributed.all_reduce(per_domain_loss_module.losses_tensor, op=torch.distributed.ReduceOp.SUM, group=dp_group)
-                torch.distributed.all_reduce(per_domain_loss_module.counts_tensor, op=torch.distributed.ReduceOp.SUM, group=dp_group)
-
-            losses_per_domain_np = per_domain_loss_module.losses_tensor.cpu().numpy()
-            counts_per_domain_np = per_domain_loss_module.counts_tensor.cpu().numpy()
-
-            handle_mixtera_feedback(
-                raw_dataset,
-                train_state.step,
-                losses_per_domain_np,
-                counts_per_domain_np,
-                dp_rank,
-                tp_rank,
-            )
-
-            # Reset per-domain loss module
-            per_domain_loss_module.reset_per_domain_stats()
-
-            # calculate float8 dynamic amax/scale for all-parameter for FSDP2
-            # it issues a single all-reduce for all parameters at once for better performance
-            float8_handler.precompute_float8_dynamic_scale_for_fsdp(model_parts)
-
-            losses_since_last_log.append(loss)
-
-            # log metrics
-            if (
-                train_state.step == 1
-                or train_state.step % job_config.metrics.log_freq == 0
-            ):
-                losses = [loss.item() for loss in losses_since_last_log]
-                avg_loss, max_loss = sum(losses) / len(losses), max(losses)
+            if per_domain_loss_module.has_per_domain_loss:
+                # First, all-reduce max_domain_id to get global_max_domain_id
+                max_domain_id_tensor = per_domain_loss_module.max_domain_id.clone()
                 if parallel_dims.dp_enabled:
-                    global_avg_loss, global_max_loss = (
-                        utils.dist_mean(avg_loss, dp_mesh),
-                        utils.dist_max(max_loss, dp_mesh),
+                    torch.distributed.all_reduce(max_domain_id_tensor, op=torch.distributed.ReduceOp.MAX, group=dp_group)
+                global_max_domain_id = max_domain_id_tensor.item()
+
+                # Resize losses_tensor and counts_tensor if needed
+                num_domains = global_max_domain_id + 1
+                if num_domains > per_domain_loss_module.losses_tensor.size(0):
+                    extra_size = num_domains - per_domain_loss_module.losses_tensor.size(0)
+                    per_domain_loss_module.losses_tensor = torch.cat([
+                        per_domain_loss_module.losses_tensor,
+                        torch.zeros(extra_size, dtype=per_domain_loss_module.losses_tensor.dtype, device=per_domain_loss_module.device)
+                    ], dim=0)
+                    per_domain_loss_module.counts_tensor = torch.cat([
+                        per_domain_loss_module.counts_tensor,
+                        torch.zeros(extra_size, dtype=per_domain_loss_module.counts_tensor.dtype, device=per_domain_loss_module.device)
+                    ], dim=0)
+
+                # Now perform all-reduce on losses_tensor and counts_tensor
+                if parallel_dims.dp_enabled:
+                    torch.distributed.all_reduce(per_domain_loss_module.losses_tensor, op=torch.distributed.ReduceOp.SUM, group=dp_group)
+                    torch.distributed.all_reduce(per_domain_loss_module.counts_tensor, op=torch.distributed.ReduceOp.SUM, group=dp_group)
+
+                losses_per_domain_np = per_domain_loss_module.losses_tensor.cpu().numpy()
+                counts_per_domain_np = per_domain_loss_module.counts_tensor.cpu().numpy()
+
+                handle_mixtera_feedback(
+                    raw_dataset,
+                    train_state.step,
+                    losses_per_domain_np,
+                    counts_per_domain_np,
+                    dp_rank,
+                    tp_rank,
+                )
+
+                # Reset per-domain loss module
+                per_domain_loss_module.reset_per_domain_stats()
+
+                # calculate float8 dynamic amax/scale for all-parameter for FSDP2
+                # it issues a single all-reduce for all parameters at once for better performance
+                float8_handler.precompute_float8_dynamic_scale_for_fsdp(model_parts)
+
+                losses_since_last_log.append(loss)
+
+                # log metrics
+                if (
+                    train_state.step == 1
+                    or train_state.step % job_config.metrics.log_freq == 0
+                ):
+                    losses = [loss.item() for loss in losses_since_last_log]
+                    avg_loss, max_loss = sum(losses) / len(losses), max(losses)
+                    if parallel_dims.dp_enabled:
+                        global_avg_loss, global_max_loss = (
+                            utils.dist_mean(avg_loss, dp_mesh),
+                            utils.dist_max(max_loss, dp_mesh),
+                        )
+                    else:
+                        global_avg_loss, global_max_loss = avg_loss, max_loss
+
+                    # update train state
+                    train_state.log_steps.append(train_state.step)
+                    train_state.global_avg_losses.append(global_avg_loss)
+                    train_state.global_max_losses.append(global_max_loss)
+
+                    time_delta = time.perf_counter() - time_last_log
+
+                    # tokens per second per device, abbreviated as tps
+                    tps = ntokens_since_last_log / (
+                        time_delta * parallel_dims.non_data_parallel_size
                     )
-                else:
-                    global_avg_loss, global_max_loss = avg_loss, max_loss
+                    # model FLOPS utilization
+                    # For its definition and calculation, please refer to the PaLM paper:
+                    # https://arxiv.org/abs/2204.02311
+                    mfu = 100 * num_flop_per_token * tps / gpu_peak_flops
 
-                # update train state
-                train_state.log_steps.append(train_state.step)
-                train_state.global_avg_losses.append(global_avg_loss)
-                train_state.global_max_losses.append(global_max_loss)
+                    time_end_to_end = time_delta / job_config.metrics.log_freq
+                    time_data_loading = sum(data_loading_times) / len(data_loading_times)
+                    time_data_loading_pct = 100 * sum(data_loading_times) / time_delta
 
-                time_delta = time.perf_counter() - time_last_log
+                    device_mem_stats = device_memory_monitor.get_peak_stats()
 
-                # tokens per second per device, abbreviated as tps
-                tps = ntokens_since_last_log / (
-                    time_delta * parallel_dims.non_data_parallel_size
-                )
-                # model FLOPS utilization
-                # For its definition and calculation, please refer to the PaLM paper:
-                # https://arxiv.org/abs/2204.02311
-                mfu = 100 * num_flop_per_token * tps / gpu_peak_flops
+                    metrics = {
+                        "loss_metrics/global_avg_loss": global_avg_loss,
+                        "loss_metrics/global_max_loss": global_max_loss,
+                        "throughput(tps)": tps,
+                        "mfu(%)": mfu,
+                        "time_metrics/end_to_end(s)": time_end_to_end,
+                        "time_metrics/data_loading(s)": time_data_loading,
+                        "time_metrics/data_loading(%)": time_data_loading_pct,
+                        "memory/max_active(GiB)": device_mem_stats.max_active_gib,
+                        "memory/max_active(%)": device_mem_stats.max_active_pct,
+                        "memory/max_reserved(GiB)": device_mem_stats.max_reserved_gib,
+                        "memory/max_reserved(%)": device_mem_stats.max_reserved_pct,
+                        "memory/num_alloc_retries": device_mem_stats.num_alloc_retries,
+                        "memory/num_ooms": device_mem_stats.num_ooms,
+                    }
+                    metric_logger.log(metrics, step=train_state.step)
 
-                time_end_to_end = time_delta / job_config.metrics.log_freq
-                time_data_loading = sum(data_loading_times) / len(data_loading_times)
-                time_data_loading_pct = 100 * sum(data_loading_times) / time_delta
+                    logger.info(
+                        f"{color.cyan}step: {train_state.step:2}  "
+                        f"{color.green}loss: {global_avg_loss:7.4f}  "
+                        f"{color.yellow}memory: {device_mem_stats.max_reserved_gib:5.2f}GiB"
+                        f"({device_mem_stats.max_reserved_pct:.2f}%)  "
+                        f"{color.blue}tps: {round(tps):,}  "
+                        f"{color.magenta}mfu: {mfu:.2f}%{color.reset}"
+                    )
 
-                device_mem_stats = device_memory_monitor.get_peak_stats()
+                    losses_since_last_log.clear()
+                    ntokens_since_last_log = 0
+                    data_loading_times.clear()
+                    time_last_log = time.perf_counter()
+                    device_memory_monitor.reset_peak_stats()
 
-                metrics = {
-                    "loss_metrics/global_avg_loss": global_avg_loss,
-                    "loss_metrics/global_max_loss": global_max_loss,
-                    "throughput(tps)": tps,
-                    "mfu(%)": mfu,
-                    "time_metrics/end_to_end(s)": time_end_to_end,
-                    "time_metrics/data_loading(s)": time_data_loading,
-                    "time_metrics/data_loading(%)": time_data_loading_pct,
-                    "memory/max_active(GiB)": device_mem_stats.max_active_gib,
-                    "memory/max_active(%)": device_mem_stats.max_active_pct,
-                    "memory/max_reserved(GiB)": device_mem_stats.max_reserved_gib,
-                    "memory/max_reserved(%)": device_mem_stats.max_reserved_pct,
-                    "memory/num_alloc_retries": device_mem_stats.num_alloc_retries,
-                    "memory/num_ooms": device_mem_stats.num_ooms,
-                }
-                metric_logger.log(metrics, step=train_state.step)
-
-                logger.info(
-                    f"{color.cyan}step: {train_state.step:2}  "
-                    f"{color.green}loss: {global_avg_loss:7.4f}  "
-                    f"{color.yellow}memory: {device_mem_stats.max_reserved_gib:5.2f}GiB"
-                    f"({device_mem_stats.max_reserved_pct:.2f}%)  "
-                    f"{color.blue}tps: {round(tps):,}  "
-                    f"{color.magenta}mfu: {mfu:.2f}%{color.reset}"
+                checkpoint.save(
+                    train_state.step, force=(train_state.step == job_config.training.steps)
                 )
 
-                losses_since_last_log.clear()
-                ntokens_since_last_log = 0
-                data_loading_times.clear()
-                time_last_log = time.perf_counter()
-                device_memory_monitor.reset_peak_stats()
+                # signal the profiler that the next profiling step has started
+                if torch_profiler:
+                    torch_profiler.step()
+                if memory_profiler:
+                    memory_profiler.step()
 
-            checkpoint.save(
-                train_state.step, force=(train_state.step == job_config.training.steps)
-            )
-
-            # signal the profiler that the next profiling step has started
-            if torch_profiler:
-                torch_profiler.step()
-            if memory_profiler:
-                memory_profiler.step()
-
-            # reduce timeout after first train step for faster signal
-            # (assuming lazy init and compilation are finished)
-            if train_state.step == 1:
-                utils.set_pg_timeouts(
-                    timeout=timedelta(seconds=job_config.comm.train_timeout_seconds),
-                    world_mesh=world_mesh,
-                )
+                # reduce timeout after first train step for faster signal
+                # (assuming lazy init and compilation are finished)
+                if train_state.step == 1:
+                    utils.set_pg_timeouts(
+                        timeout=timedelta(seconds=job_config.comm.train_timeout_seconds),
+                        world_mesh=world_mesh,
+                    )
 
     if torch.distributed.get_rank() == 0:
         logger.info("Sleeping 2 seconds for other ranks to complete")
