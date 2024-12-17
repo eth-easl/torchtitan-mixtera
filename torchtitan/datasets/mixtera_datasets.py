@@ -11,7 +11,7 @@ class MixteraWrapper(torch.utils.data.IterableDataset):
         self.torch_ds = torch_ds
 
     def __iter__(self):
-        for key_id, sample in super().__iter__():
+        for key_id, sample in self.torch_ds:
             assert isinstance(key_id, int)
             assert isinstance(sample, list)
             assert isinstance(sample[0], int)
