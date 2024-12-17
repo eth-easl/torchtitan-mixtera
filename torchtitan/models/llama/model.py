@@ -458,3 +458,72 @@ class Transformer(nn.Module):
 
         """
         return cls(model_args)
+
+
+class PerDomainLoss(nn.Module):
+    def __init__(self, initial_num_domains=32, device=None):
+        super().__init__()
+        self._default_domains = initial_num_domains
+        self.device = device or torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        # Initialize losses_tensor and counts_tensor
+        self.losses_tensor = torch.zeros(self._default_domains, dtype=torch.float32, device=self.device)
+        self.counts_tensor = torch.zeros(self._default_domains, dtype=torch.int64, device=self.device)
+        # Initialize max_domain_id as a tensor
+        self.max_domain_id = torch.tensor(self._default_domains - 1, dtype=torch.int32, device=self.device)
+        self.has_per_domain_loss = False
+
+    def forward(self, logits, labels, key_ids=None):
+        # Flatten tensors
+        logits = logits.reshape(-1, logits.size(-1))
+        labels = labels.reshape(-1)
+        # Compute loss per token
+        loss = torch.nn.functional.cross_entropy(
+            logits,
+            labels,
+            reduction='none'
+        )
+        # Compute final loss for backpropagation
+        final_loss = loss.mean()
+
+        if key_ids is not None:
+            with torch.no_grad():
+                self.has_per_domain_loss = True
+
+                # Flatten key_ids
+                key_ids = key_ids.reshape(-1)
+
+                # Get maximum domain ID in the batch
+                batch_max_domain_id = key_ids.max()
+
+                # Update max_domain_id if necessary
+                if batch_max_domain_id > self.max_domain_id:
+                    self.max_domain_id = batch_max_domain_id
+                    self._default_domains = self.max_domain_id + 1
+
+                num_domains = self.max_domain_id + 1
+
+                # Ensure tensors are large enough
+                if num_domains > self.losses_tensor.size(0):
+                    extra_size = num_domains - self.losses_tensor.size(0)
+                    self.losses_tensor = torch.cat([
+                        self.losses_tensor,
+                        torch.zeros(extra_size, dtype=torch.float32, device=self.device)
+                    ], dim=0)
+                    self.counts_tensor = torch.cat([
+                        self.counts_tensor,
+                        torch.zeros(extra_size, dtype=torch.int64, device=self.device)
+                    ], dim=0)
+
+                # Accumulate per-domain losses and counts
+                self.losses_tensor.index_add_(0, key_ids, loss)
+                self.counts_tensor.index_add_(0, key_ids, torch.ones_like(key_ids, dtype=torch.int64))
+
+        return final_loss
+
+    def get_per_domain_stats(self):
+        return self.losses_tensor.clone(), self.counts_tensor.clone(), self.max_domain_id.clone()
+
+    def reset_per_domain_stats(self):
+        self.losses_tensor.zero_()
+        self.counts_tensor.zero_()
+        self.max_domain_id = torch.tensor(self._default_domains - 1, dtype=torch.int32, device=self.device)

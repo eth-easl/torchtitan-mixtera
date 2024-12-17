@@ -16,10 +16,12 @@ from torchtitan import utils
 from torchtitan.checkpoint import CheckpointManager, TrainState
 from torchtitan.config_manager import JobConfig
 from torchtitan.datasets import build_hf_data_loader, build_tokenizer
+from torchtitan.datasets.mixtera_datasets import build_mixtera_data_loader
 from torchtitan.float8 import Float8Handler
 from torchtitan.logging import init_logger, logger
 from torchtitan.metrics import build_device_memory_monitor, build_metric_logger
 from torchtitan.models import model_name_to_cls, model_name_to_tokenizer, models_config
+from torchtitan.models.llama.model import PerDomainLoss
 from torchtitan.optimizer import build_lr_schedulers, build_optimizers
 from torchtitan.parallelisms import (
     models_parallelize_fns,
@@ -29,6 +31,16 @@ from torchtitan.parallelisms import (
 from torchtitan.profiling import maybe_enable_memory_snapshot, maybe_enable_profiling
 from torchtitan.utils import device_module, device_type
 
+from mixtera.torch import MixteraTorchDataset
+from mixtera.core.client import MixteraClient, QueryExecutionArgs, ResultStreamingArgs
+from mixtera.core.query import Query
+from mixtera.core.query.mixture import InferringMixture, StaticMixture, MixtureKey
+from mixtera.core.query.mixture.dynamic_mixture import DynamicMixture
+from mixtera.core.algo.ado.ado import AdoDynamicMixing
+from mixtera.utils.feedback import handle_mixtera_feedback
+
+# Query execution in Mixtera takes long, and NCCL would time out otherwise.
+os.environ["NCCL_TIMEOUT"] = str(30 * 60 * 1000)
 
 # Enable debug tracing on failure: https://pytorch.org/docs/stable/elastic/errors.html
 @record
@@ -66,28 +78,111 @@ def main(job_config: JobConfig):
     if parallel_dims.dp_enabled:
         dp_mesh = world_mesh["dp"]
         dp_degree, dp_rank = dp_mesh.size(), dp_mesh.get_local_rank()
+        dp_group = dp_mesh.get_group()
     else:
         dp_degree, dp_rank = 1, 0
+        dp_group = None
 
     if parallel_dims.pp_enabled:
         pp_mesh = world_mesh["pp"]
+
+    if parallel_dims.tp_enabled:
+        tp_mesh = world_mesh["tp"]
+        tp_rank = tp_mesh.get_local_rank()
+    else:
+        tp_rank = 0
 
     # Set random seed, and maybe enable deterministic mode (mainly for debugging, expect perf loss)
     utils.set_determinism(world_mesh, device, job_config)
     model_name = job_config.model.name
 
     # build tokenizer
-    tokenizer_type = model_name_to_tokenizer[model_name]
-    tokenizer = build_tokenizer(tokenizer_type, job_config.model.tokenizer_path)
+    # tokenizer_type = model_name_to_tokenizer[model_name]
+    # tokenizer = build_tokenizer(tokenizer_type, job_config.model.tokenizer_path)
+    
+    # Mixtera setup (todo: make this config parameter)
+    client = MixteraClient.from_remote("localhost", 8888)
+    job_id = "torchtitan_test"
+    chunk_size = 512
+    tunnel_via_server = False
+    chunk_reading_degree_of_parallelism = 1
+    num_workers = 16
+    tokenizer = "EleutherAI/gpt-neox-20b"
+
+    coordinate = world_mesh.get_coordinate()
+    mesh_dim_names = world_mesh.mesh_dim_names
+    mesh_sizes = world_mesh.size_per_dim()
+
+    # Map dimension names to indices and sizes
+    coord_dict = dict(zip(mesh_dim_names, coordinate))
+    size_dict = dict(zip(mesh_dim_names, mesh_sizes))
+
+    # Get dp_group_id (data parallel group ID)
+    dp_group_id = coord_dict.get("dp", 0)  # Default to 0 if dp not enabled
+    assert dp_group_id == dp_rank
+
+    # Compute node_id (unique index within model parallel group)
+    non_dp_dims = [dim for dim in mesh_dim_names if dim != "dp"]
+    node_id = 0
+    multiplier = 1
+    for dim_name in reversed(non_dp_dims):
+        idx = coord_dict[dim_name]
+        size = size_dict[dim_name]
+        node_id += idx * multiplier
+        multiplier *= size
+
+    # Compute nodes_per_dp_group
+    nodes_per_dp_group = 1
+    for dim_name in non_dp_dims:
+        nodes_per_dp_group *= size_dict[dim_name]
+
+    assert nodes_per_dp_group == world_size // dp_degree
+    assert nodes_per_dp_group == parallel_dims.non_data_parallel_size
+    assert nodes_per_dp_group * dp_degree == world_size
+
+    logger.info(f"dp_group_id: {dp_group_id}, dp_degree: {dp_degree}, node_id: {node_id}, nodes_per_dp_group: {nodes_per_dp_group}")
+
+    mixture_pile_static = StaticMixture(chunk_size=chunk_size, mixture={
+        MixtureKey({"pile_set_name": ["FreeLaw"]}): 0.04493927695030662,
+        MixtureKey({"pile_set_name": ["Enron Emails"]}): 0.000998021865918546,
+        MixtureKey({"pile_set_name": ["Github"]}): 0.12267758913758665,
+        MixtureKey({"pile_set_name": ["OpenSubtitles"]}): 0.015835745965429738,
+        MixtureKey({"pile_set_name": ["PubMed Central"]}): 0.12148621531516873,
+        MixtureKey({"pile_set_name": ["OpenWebText2"]}): 0.10960682218906206,
+        MixtureKey({"pile_set_name": ["StackExchange"]}): 0.049107965728456646,
+        MixtureKey({"pile_set_name": ["Pile-CC"]}): 0.1824984780261193,
+        MixtureKey({"pile_set_name": ["ArXiv"]}): 0.08862621733009907,
+        MixtureKey({"pile_set_name": ["USPTO Backgrounds"]}): 0.02616577419097875,
+        MixtureKey({"pile_set_name": ["Books3"]}): 0.10458626728299704,
+        MixtureKey({"pile_set_name": ["Wikipedia (en)"]}): 0.04016661238580172,
+        MixtureKey({"pile_set_name": ["PubMed Abstracts"]}): 0.02212837481440004,
+        MixtureKey({"pile_set_name": ["NIH ExPorter"]}): 0.0018685647881937016,
+        MixtureKey({"pile_set_name": ["BookCorpus2"]}): 0.006327357399975309,
+        MixtureKey({"pile_set_name": ["EuroParl"]}): 0.008072738376112661,
+        MixtureKey({"pile_set_name": ["HackerNews"]}): 0.004731183407655429,
+        MixtureKey({"pile_set_name": ["DM Mathematics"]}): 0.019084626704901235,
+        MixtureKey({"pile_set_name": ["YoutubeSubtitles"]}): 0.004027438721554198,
+        MixtureKey({"pile_set_name": ["PhilPapers"]}): 0.0026731438901686708,
+        MixtureKey({"pile_set_name": ["Ubuntu IRC"]}): 0.004850316881507234,
+        MixtureKey({"pile_set_name": ["Gutenberg (PG-19)"]}): 0.0195412686476066,
+    })
+
+    mixture_ado = DynamicMixture(chunk_size=chunk_size, initial_mixture=mixture_pile_static, mixing_alg=AdoDynamicMixing(variant="vanilla"))
+    mixture = mixture_ado
+
+    query_execution_args = QueryExecutionArgs(mixture=mixture, dp_groups=dp_degree, nodes_per_group=nodes_per_dp_group, num_workers=num_workers)
+    streaming_args = ResultStreamingArgs(job_id=job_id, dp_group_id=dp_group_id, node_id=node_id, tunnel_via_server=tunnel_via_server, 
+                                         chunk_reading_degree_of_parallelism=chunk_reading_degree_of_parallelism,
+                                         chunk_reading_mixture_type="token", chunk_reading_tokenizer=tokenizer, chunk_reading_sequence_len=job_config.training.seq_len,
+                                         chunk_reading_token_overlapping=False, chunk_reading_eos=True, chunk_reading_bos=True)
+
+    query = Query.for_job(job_id).select(None)
+
+    raw_dataset = MixteraTorchDataset(client, query, query_execution_args, streaming_args, checkpoint_path=None)
+
     # build dataloader
-    data_loader = build_hf_data_loader(
-        job_config.training.dataset,
-        job_config.training.dataset_path,
-        tokenizer,
-        job_config.training.batch_size,
-        job_config.training.seq_len,
-        dp_degree,
-        dp_rank,
+    data_loader = build_mixtera_data_loader(
+        raw_dataset, job_config.training.batch_size, num_workers
     )
 
     # build model (using meta init)
@@ -123,13 +218,18 @@ def main(job_config: JobConfig):
     )
 
     # loss function to be shared by Pipeline Parallel and SPMD training
-    def loss_fn(pred, labels):
-        return torch.nn.functional.cross_entropy(
-            pred.flatten(0, 1).float(), labels.flatten(0, 1)
-        )
+    #def loss_fn(pred, labels):
+    #    return torch.nn.functional.cross_entropy(
+    #        pred.flatten(0, 1).float(), labels.flatten(0, 1)
+    #    )
+
+    #if job_config.training.compile:
+    #    loss_fn = torch.compile(loss_fn)
+
+    per_domain_loss_module = PerDomainLoss(device=device) 
 
     if job_config.training.compile:
-        loss_fn = torch.compile(loss_fn)
+        per_domain_loss_module = torch.compile(per_domain_loss_module)
 
     # move sharded model to CPU/GPU and initialize weights via DTensor
     if job_config.checkpoint.create_seed_checkpoint:
@@ -144,6 +244,7 @@ def main(job_config: JobConfig):
 
     # apply parallelisms and initialization
     if parallel_dims.pp_enabled:
+        raise NotImplementedError("do not support per domain loss with pp yet")
         # apply PT-D Pipeline Parallel
         pp_schedule, model_parts = models_pipelining_fns[model_name](
             model, pp_mesh, parallel_dims, job_config, device, model_config, loss_fn
@@ -249,12 +350,13 @@ def main(job_config: JobConfig):
             # get batch
             data_load_start = time.perf_counter()
             batch = next(data_iterator)
-            input_ids, labels = batch
+            input_ids, labels, key_ids = batch
             ntokens_since_last_log += labels.numel()
             data_loading_times.append(time.perf_counter() - data_load_start)
 
             input_ids = input_ids.to(device_type)
             labels = labels.to(device_type)
+            key_ids = key_ids.to(device_type)
             optimizers.zero_grad()
 
             # apply context parallelism if cp is enabled
@@ -271,6 +373,8 @@ def main(job_config: JobConfig):
             )
 
             if parallel_dims.pp_enabled:
+                # todo mixtera support
+                raise NotImplementedError("no mixtera support for pp yet")
                 # Pipeline Parallel forward / backward inside step() call
                 is_last_stage = pp_mesh.get_local_rank() == pp_mesh.size() - 1
 
@@ -293,7 +397,7 @@ def main(job_config: JobConfig):
                 # Non-PP forward / backward
                 with train_context(optional_context_parallel_ctx):
                     pred = model(input_ids)
-                    loss = loss_fn(pred, labels)
+                    loss = per_domain_loss_module(pred, labels, key_ids)
                     # pred.shape=(bs, seq_len, vocab_size)
                     # need to free to before bwd to avoid peaking memory
                     del pred
@@ -314,6 +418,46 @@ def main(job_config: JobConfig):
             checkpoint.maybe_wait_for_staging()
             optimizers.step()
             lr_schedulers.step()
+
+        if per_domain_loss_module.has_per_domain_loss:
+            # First, all-reduce max_domain_id to get global_max_domain_id
+            max_domain_id_tensor = per_domain_loss_module.max_domain_id.clone()
+            if parallel_dims.dp_enabled:
+                torch.distributed.all_reduce(max_domain_id_tensor, op=torch.distributed.ReduceOp.MAX, group=dp_group)
+            global_max_domain_id = max_domain_id_tensor.item()
+
+            # Resize losses_tensor and counts_tensor if needed
+            num_domains = global_max_domain_id + 1
+            if num_domains > per_domain_loss_module.losses_tensor.size(0):
+                extra_size = num_domains - per_domain_loss_module.losses_tensor.size(0)
+                per_domain_loss_module.losses_tensor = torch.cat([
+                    per_domain_loss_module.losses_tensor,
+                    torch.zeros(extra_size, dtype=per_domain_loss_module.losses_tensor.dtype, device=per_domain_loss_module.device)
+                ], dim=0)
+                per_domain_loss_module.counts_tensor = torch.cat([
+                    per_domain_loss_module.counts_tensor,
+                    torch.zeros(extra_size, dtype=per_domain_loss_module.counts_tensor.dtype, device=per_domain_loss_module.device)
+                ], dim=0)
+
+            # Now perform all-reduce on losses_tensor and counts_tensor
+            if parallel_dims.dp_enabled:
+                torch.distributed.all_reduce(per_domain_loss_module.losses_tensor, op=torch.distributed.ReduceOp.SUM, group=dp_group)
+                torch.distributed.all_reduce(per_domain_loss_module.counts_tensor, op=torch.distributed.ReduceOp.SUM, group=dp_group)
+
+            losses_per_domain_np = per_domain_loss_module.losses_tensor.cpu().numpy()
+            counts_per_domain_np = per_domain_loss_module.counts_tensor.cpu().numpy()
+
+            handle_mixtera_feedback(
+                raw_dataset,
+                train_state.step,
+                losses_per_domain_np,
+                counts_per_domain_np,
+                dp_rank,
+                tp_rank,
+            )
+
+            # Reset per-domain loss module
+            per_domain_loss_module.reset_per_domain_stats()
 
             # calculate float8 dynamic amax/scale for all-parameter for FSDP2
             # it issues a single all-reduce for all parameters at once for better performance
