@@ -9,6 +9,8 @@ import time
 from datetime import timedelta
 
 import torch
+import torch.distributed._functional_collectives as funcol
+import torch.distributed.distributed_c10d as c10d
 
 from torch.distributed.elastic.multiprocessing.errors import record
 
@@ -382,6 +384,12 @@ def main(job_config: JobConfig):
             key_ids = key_ids.to(device_type)
             optimizers.zero_grad()
 
+            handle_losses = None
+            handle_counts = None
+            losses_tensor = None
+            counts_tensor = None
+            init_async_start = 0
+
             # apply context parallelism if cp is enabled
             optional_context_parallel_ctx = (
                 utils.create_context_parallel_ctx(
@@ -424,6 +432,28 @@ def main(job_config: JobConfig):
                     # pred.shape=(bs, seq_len, vocab_size)
                     # need to free to before bwd to avoid peaking memory
                     del pred
+
+                    init_async_start = time.perf_counter()
+                    if per_domain_loss_module.has_per_domain_loss:
+                        with torch.no_grad():
+                            losses_tensor, counts_tensor, max_id_tensor = per_domain_loss_module.get_per_domain_stats()
+                            max_handle = funcol.all_reduce(max_id_tensor, reduceOp=c10d.ReduceOp.MAX.name, group=dp_mesh).item() # dp mesh vs dp group?
+                            per_domain_loss_module.reset_per_domain_stats()
+                            max_handle.wait()
+                            max_domain_id = max_id_tensor.item()
+                            # Resize tensors to the maximum domain ID
+                            if losses_tensor.size(0) < max_domain_id + 1:
+                                new_size = max_domain_id + 1 - losses_tensor.size(0)
+                                losses_tensor = torch.cat(
+                                    [losses_tensor, torch.zeros(new_size, dtype=losses_tensor.dtype, device=losses_tensor.device)], dim=0)
+                                counts_tensor = torch.cat(
+                                    [counts_tensor, torch.zeros(new_size, dtype=counts_tensor.dtype, device=counts_tensor.device)], dim=0)
+
+                            handle_losses = funcol.all_reduce(losses_tensor, op=c10d.ReduceOp.SUM.name, async_op=True, group=dp_mesh)
+                            handle_counts = funcol.all_reduce(counts_tensor, op=c10d.ReduceOp.SUM.name, async_op=True, group=dp_mesh)
+
+                    init_async_time = time.perf_counter() - init_async_start
+
                     loss.backward()
 
             # clip gradients
@@ -442,49 +472,25 @@ def main(job_config: JobConfig):
             optimizers.step()
             lr_schedulers.step()
 
-            all_reduce_start = time.perf_counter()
 
+            wait_mixtera_start = time.perf_counter()
             if per_domain_loss_module.has_per_domain_loss:
-                # First, all-reduce max_domain_id to get global_max_domain_id
-                max_domain_id_tensor = per_domain_loss_module.max_domain_id.clone()
-                if parallel_dims.dp_enabled:
-                    torch.distributed.all_reduce(max_domain_id_tensor, op=torch.distributed.ReduceOp.MAX, group=dp_group)
-                global_max_domain_id = max_domain_id_tensor.item()
+                handle_losses.wait()
+                handle_counts.wait()
+                wait_mixtera_time = time.perf_counter() - wait_mixtera_start
 
-                # Resize losses_tensor and counts_tensor if needed
-                num_domains = global_max_domain_id + 1
-                if num_domains > per_domain_loss_module.losses_tensor.size(0):
-                    extra_size = num_domains - per_domain_loss_module.losses_tensor.size(0)
-                    per_domain_loss_module.losses_tensor = torch.cat([
-                        per_domain_loss_module.losses_tensor,
-                        torch.zeros(extra_size, dtype=per_domain_loss_module.losses_tensor.dtype, device=per_domain_loss_module.device)
-                    ], dim=0)
-                    per_domain_loss_module.counts_tensor = torch.cat([
-                        per_domain_loss_module.counts_tensor,
-                        torch.zeros(extra_size, dtype=per_domain_loss_module.counts_tensor.dtype, device=per_domain_loss_module.device)
-                    ], dim=0)
-
-                # Now perform all-reduce on losses_tensor and counts_tensor
-                if parallel_dims.dp_enabled:
-                    torch.distributed.all_reduce(per_domain_loss_module.losses_tensor, op=torch.distributed.ReduceOp.SUM, group=dp_group)
-                    torch.distributed.all_reduce(per_domain_loss_module.counts_tensor, op=torch.distributed.ReduceOp.SUM, group=dp_group)
-
-                losses_per_domain_np = per_domain_loss_module.losses_tensor.cpu().numpy()
-                counts_per_domain_np = per_domain_loss_module.counts_tensor.cpu().numpy()
+                mixtera_feedback_start = time.perf_counter()
 
                 handle_mixtera_feedback(
                     raw_dataset,
                     train_state.step,
-                    losses_per_domain_np,
-                    counts_per_domain_np,
+                    losses_tensor,
+                    counts_tensor,
                     dp_rank,
                     tp_rank,
                 )
 
-                # Reset per-domain loss module
-                per_domain_loss_module.reset_per_domain_stats()
-
-            all_reduce_end = time.perf_counter()
+                mixtera_feedback_time = time.perf_counter() - mixtera_feedback_start
 
             # calculate float8 dynamic amax/scale for all-parameter for FSDP2
             # it issues a single all-reduce for all parameters at once for better performance
@@ -552,7 +558,7 @@ def main(job_config: JobConfig):
                     f"{color.yellow}memory: {device_mem_stats.max_reserved_gib:5.2f}GiB"
                     f"({device_mem_stats.max_reserved_pct:.2f}%)  "
                     f"{color.blue}tps: {round(tps):,}  "
-                    f"time spent mixtera: {all_reduce_end - all_reduce_start}"
+                    f"timings: init_async_time={init_async_time}  wait_mixtera_time={wait_mixtera_time} mixtera_feedback_time={mixtera_feedback_time}  "
                     f"{color.magenta}mfu: {mfu:.2f}%{color.reset}"
                 )
 
