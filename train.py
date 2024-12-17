@@ -437,7 +437,7 @@ def main(job_config: JobConfig):
                     if per_domain_loss_module.has_per_domain_loss:
                         with torch.no_grad():
                             losses_tensor, counts_tensor, max_id_tensor = per_domain_loss_module.get_per_domain_stats()
-                            max_handle = funcol.all_reduce(max_id_tensor, reduceOp=c10d.ReduceOp.MAX.name, group=dp_mesh).item() # dp mesh vs dp group?
+                            max_handle = funcol.all_reduce(max_id_tensor, reduceOp=c10d.ReduceOp.MAX.name, async_op=True, group=dp_mesh) # dp mesh vs dp group?
                             per_domain_loss_module.reset_per_domain_stats()
                             max_handle.wait()
                             max_domain_id = max_id_tensor.item()
