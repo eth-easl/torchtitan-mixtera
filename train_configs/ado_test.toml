@@ -61,3 +61,7 @@ selective_ac_option = '2'  # 'int' = ac every positive int layer or 'op', ac bas
 
 [float8]
 enable_float8_linear = false
+
+[comm]
+init_timeout_seconds = 600
+train_timeout_seconds = 600 # very high timeout for mixtera ops, temp solution, should parallelize some things e.g. fitting of scaling laws
