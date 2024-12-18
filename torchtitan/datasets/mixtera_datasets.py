@@ -23,6 +23,12 @@ class MixteraWrapper(torch.utils.data.IterableDataset):
 
             yield input, label, key_ids
 
+    def __getstate__(self):
+        state = self.__dict__.copy()
+        if "torch_ds" in state:
+            del state["torch_ds"]
+        return state
+
 def build_mixtera_data_loader(
     mixtera_ds: MixteraTorchDataset,
     batch_size: int,
