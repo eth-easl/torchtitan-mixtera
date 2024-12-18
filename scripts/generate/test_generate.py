@@ -10,6 +10,7 @@ import os
 import sys
 import time
 from pathlib import Path
+from transformers import AutoTokenizer
 
 from typing import Optional
 
@@ -112,15 +113,12 @@ def test_generate(
 
     logger.info(f"World Size: {world_size}, Local Rank: {local_rank} on {device}")
 
-    # Tokenizer setup
-    tokenizer = build_tokenizer(
-        model_name_to_tokenizer[model_name], config.model.tokenizer_path
-    )
+    tokenizer = AutoTokenizer.from_pretrained("EleutherAI/gpt-neox-20b", use_fast=True)
 
     model_config = models_config[model_name][config.model.flavor]
     model_config.norm_type = config.model.norm_type
     model_config.max_seq_len = config.training.seq_len
-    model_config.vocab_size = tokenizer.n_words
+    model_config.vocab_size = 50432 # todo hardcoded right now
 
     model_cls = model_name_to_cls[model_name]
     init_device = "meta" if world_size > 1 else device
@@ -170,7 +168,7 @@ def test_generate(
     input_ids = (
         (
             torch.tensor(
-                tokenizer.encode(prompt, bos=True, eos=False), dtype=torch.long
+                [tokenizer.bos_token_id] + tokenizer.encode(prompt), dtype=torch.long # max_length=config.training.seq_len - 1 ??
             )
             .view(1, -1)
             .repeat(batch_size, 1)
