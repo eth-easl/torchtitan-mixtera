@@ -663,7 +663,7 @@ class JobConfig:
         # TODO: Add more mandatory validations
         assert self.model.name
         assert self.model.flavor
-        assert self.model.tokenizer_path
+        #assert self.model.tokenizer_path
 
     def parse_args_from_command_line(
         self, args_list
