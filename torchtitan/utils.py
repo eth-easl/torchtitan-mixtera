@@ -20,7 +20,6 @@ from torch import distributed as dist
 from torch._utils import _get_available_device_type, _get_device_module
 from torch.distributed.device_mesh import DeviceMesh
 from torch.distributed.tensor import DTensor
-from torchtitan.config_manager import JobConfig
 from torchtitan.logging import logger
 
 
@@ -54,9 +53,10 @@ def _warn_overwrite_env(env, val):
 
 
 def set_determinism(
-    world_mesh: DeviceMesh,
+    world_mesh: Optional[DeviceMesh],
     device: torch.device,
-    job_config: JobConfig,
+    seed: Optional[int] = None,
+    deterministic: bool = False,
 ) -> None:
     """
     Set the same DTensor manual seed for all ranks within the same DTensor SPMD group, but different
@@ -67,8 +67,8 @@ def set_determinism(
 
     Set Determinism flags for increased reproducibility with loss of performance.
     """
-    if job_config.training.deterministic:
-        logger.info("Deterministic training enabled (expect perf degradation).")
+    if deterministic:
+        logger.info("Deterministic algorithm enabled (expect perf degradation).")
         torch.use_deterministic_algorithms(True)
         torch.backends.cudnn.deterministic = True
         torch.backends.cudnn.benchmark = False
@@ -76,9 +76,15 @@ def set_determinism(
         # https://pytorch.org/docs/stable/generated/torch.use_deterministic_algorithms.html
         os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
 
+    if not world_mesh:
+        if seed is not None:
+            torch.manual_seed(seed)
+            os.environ["PYTHONHASHSEED"] = str(seed % 2**32)
+            logger.debug(f"Single-process job using seed: {seed}")
+        return
+
     # to ensure we can control which ranks have same or different seeds, all ranks agree on a starting seed.
     # if user provides one, we use this. Otherwise rank 0 rolls the dice and everyone else uses that.
-    seed = job_config.training.seed
     if seed is None:
         # Extract the seed for torch's main generator on rank 0 and standardizes on using that to build
         # seeds for unique SPMD groups
@@ -378,16 +384,18 @@ def clip_grad_norm_(
         grads, norm_type, error_if_nonfinite, foreach
     )
 
+    # If total_norm is a DTensor, the placements must be `torch.distributed._tensor.ops.math_ops._NormPartial`.
+    # We can simply reduce the DTensor to get the total norm in this tensor's process group
+    # and then convert it to a local tensor.
+    # NOTE: It has two purposes:
+    #       1. to make sure the total norm is computed correctly when PP is used (see below)
+    #       2. to return a reduced total_norm tensor whose .item() would return the correct value
+    if isinstance(total_norm, DTensor):
+        # Will reach here if any non-PP parallelism is used.
+        # If only using PP, total_norm will be a local tensor.
+        total_norm = total_norm.full_tensor()
+
     if pp_mesh is not None:
-        if isinstance(total_norm, DTensor):
-            # will reach here if PP + other parallelism is used. If only using PP, total_norm will be a local tensor
-
-            # if total_norm is a DTensor, the placements must be `torch.distributed._tensor.ops.math_ops._NormPartial`
-            # we can simply reduce the DTensor to get the total norm in this tensor's process group
-            # and then convert it to a local tensor
-            total_norm = total_norm.full_tensor()
-
-        # TODO: cleanup maybe using DTensor
         if math.isinf(norm_type):
             dist.all_reduce(total_norm, op=dist.ReduceOp.MAX, group=pp_mesh.get_group())
         else:

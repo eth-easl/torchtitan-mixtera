@@ -50,8 +50,11 @@ def main(job_config: JobConfig):
     init_logger()
     logger.info(f"Starting job: {job_config.job.description}")
 
+    if job_config.job.print_args:
+        logger.info(f"Running with args: {job_config.to_dict()}")
+
     # used for colorful printing
-    color = utils.Color if job_config.metrics.enable_color_printing else utils.NoColor
+    color = utils.NoColor if job_config.metrics.disable_color_printing else utils.Color
 
     # take control of garbage collection to avoid stragglers
     gc_handler = utils.GarbageCollection(gc_freq=job_config.training.gc_freq)
@@ -65,7 +68,7 @@ def main(job_config: JobConfig):
         tp=job_config.training.tensor_parallel_degree,
         pp=job_config.experimental.pipeline_parallel_degree,
         world_size=world_size,
-        enable_loss_parallel=job_config.training.enable_loss_parallel,
+        enable_loss_parallel=not job_config.training.disable_loss_parallel,
     )
     device = torch.device(f"{device_type}:{int(os.environ['LOCAL_RANK'])}")
     device_module.set_device(device)
@@ -95,7 +98,9 @@ def main(job_config: JobConfig):
         tp_rank = 0
 
     # Set random seed, and maybe enable deterministic mode (mainly for debugging, expect perf loss)
-    utils.set_determinism(world_mesh, device, job_config)
+    utils.set_determinism(
+        world_mesh, device, job_config.training.seed, job_config.training.deterministic
+    )
     model_name = job_config.model.name
 
     # build tokenizer
@@ -281,13 +286,13 @@ def main(job_config: JobConfig):
     #        pred.flatten(0, 1).float(), labels.flatten(0, 1)
     #    )
 
-    #if job_config.training.compile:
-    #    loss_fn = torch.compile(loss_fn)
-
     per_domain_loss_module = PerDomainLoss(device=device) 
 
-    if job_config.training.compile:
-        per_domain_loss_module = torch.compile(per_domain_loss_module)
+    # TODO: compiling loss function causes CUDA errors, turning off for now
+    # if job_config.training.compile: 
+    #     loss_fn = torch.compile(loss_fn)
+    #if job_config.training.compile: MIXTERA OPTION (above is STANDARD TORCHTITAN)
+    #    per_domain_loss_module = torch.compile(per_domain_loss_module)
 
     # move sharded model to CPU/GPU and initialize weights via DTensor
     if job_config.checkpoint.create_seed_checkpoint:
@@ -315,13 +320,15 @@ def main(job_config: JobConfig):
             # apply SPMD-style PT-D techniques
             models_parallelize_fns[model_name](m, world_mesh, parallel_dims, job_config)
             m.to_empty(device=init_device)
-            m.init_weights(buffer_device=buffer_device)
+            with torch.no_grad():
+                m.init_weights(buffer_device=buffer_device)
             m.train()
     else:
         # apply PT-D Tensor Parallel, activation checkpointing, torch.compile, Data Parallel
         models_parallelize_fns[model_name](model, world_mesh, parallel_dims, job_config)
         model.to_empty(device=init_device)
-        model.init_weights(buffer_device=buffer_device)
+        with torch.no_grad():
+            model.init_weights(buffer_device=buffer_device)
         model.train()
 
         model_parts = [model]
@@ -540,10 +547,14 @@ def main(job_config: JobConfig):
             ):
                 losses = [loss.item() for loss in losses_since_last_log]
                 avg_loss, max_loss = sum(losses) / len(losses), max(losses)
-                if parallel_dims.dp_enabled:
+                if (
+                    parallel_dims.dp_replicate_enabled
+                    or parallel_dims.dp_shard_enabled
+                    or parallel_dims.cp_enabled
+                ):
                     global_avg_loss, global_max_loss = (
-                        utils.dist_mean(avg_loss, dp_mesh),
-                        utils.dist_max(max_loss, dp_mesh),
+                        utils.dist_mean(avg_loss, world_mesh["dp_cp"]),
+                        utils.dist_max(max_loss, world_mesh["dp_cp"]),
                     )
                 else:
                     global_avg_loss, global_max_loss = avg_loss, max_loss
