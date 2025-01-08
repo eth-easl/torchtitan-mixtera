@@ -1,5 +1,12 @@
-[![4 GPU Integration Test](https://github.com/pytorch/torchtitan/actions/workflows/integration_test_4gpu.yaml/badge.svg?branch=main)](https://github.com/pytorch/torchtitan/actions/workflows/integration_test_4gpu.yaml?query=branch%3Amain)
-[![8 GPU Integration Test](https://github.com/pytorch/torchtitan/actions/workflows/integration_test_8gpu.yaml/badge.svg?branch=main)](https://github.com/pytorch/torchtitan/actions/workflows/integration_test_8gpu.yaml?query=branch%3Amain)
+# Mixtera support
+
+TODO:
+- support for tensor/pipeline/context parallelism (right now only DP is supported)
+- checkpointing at mixtera
+- better user interface (e.g. extend configs)
+- fully understand dp shard vs dp replica and implications on mixtera. Both in terms of which data we send and for the feedback all reduce ops, which group should we use.
+- maybe move MixteraWrapper inside mixtera for torchtitan support?
+- Maybe support for tokenization outside mixtera?
 
 # torchtitan
 

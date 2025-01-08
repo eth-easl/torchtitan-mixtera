@@ -103,12 +103,12 @@ def main(job_config: JobConfig):
     # tokenizer = build_tokenizer(tokenizer_type, job_config.model.tokenizer_path)
     
     # Mixtera setup (todo: make this config parameter)
-    client = MixteraClient.from_remote("localhost", 8888)
+    client = MixteraClient.from_remote("127.0.0.1", 8888)
     job_id = "torchtitan_test"
     chunk_size = 512
     tunnel_via_server = False
     chunk_reading_degree_of_parallelism = 1
-    num_workers = 16
+    num_workers = 4
     tokenizer = "EleutherAI/gpt-neox-20b"
 
     coordinate = world_mesh.get_coordinate()
@@ -167,6 +167,7 @@ def main(job_config: JobConfig):
 
     logger.info(f"dp_group_id: {dp_group_id}, dp_degree: {dp_degree}, node_id: {node_id}, nodes_per_dp_group: {nodes_per_dp_group}")
 
+    ## "Natural" baseline from ADO paper
     mixture_pile_static = StaticMixture(chunk_size=chunk_size, mixture={
         MixtureKey({"pile_set_name": ["FreeLaw"]}): 0.04493927695030662,
         MixtureKey({"pile_set_name": ["Enron Emails"]}): 0.000998021865918546,
@@ -192,22 +193,54 @@ def main(job_config: JobConfig):
         MixtureKey({"pile_set_name": ["Gutenberg (PG-19)"]}): 0.0195412686476066,
     })
 
-    mixture_ado = DynamicMixture(chunk_size=chunk_size, initial_mixture=mixture_pile_static, mixing_alg=AdoDynamicMixing(variant="vanilla"))
-    mixture = mixture_ado
+    ## Default pile weights
+    mixture_pile_default = StaticMixture(chunk_size=chunk_size, mixture={
+        MixtureKey({"pile_set_name": ["Pile-CC"]}): 0.1121,
+        MixtureKey({"pile_set_name": ["PubMed Central"]}): 0.1071,
+        MixtureKey({"pile_set_name": ["Books3"]}): 0.0676,
+        MixtureKey({"pile_set_name": ["OpenWebText2"]}): 0.1247,
+        MixtureKey({"pile_set_name": ["ArXiv"]}): 0.1052,
+        MixtureKey({"pile_set_name": ["Github"]}): 0.0427,
+        MixtureKey({"pile_set_name": ["FreeLaw"]}): 0.0386,
+        MixtureKey({"pile_set_name": ["StackExchange"]}): 0.0929,
+        MixtureKey({"pile_set_name": ["USPTO Backgrounds"]}): 0.0420,
+        MixtureKey({"pile_set_name": ["PubMed Abstracts"]}): 0.0845,
+        MixtureKey({"pile_set_name": ["Gutenberg (PG-19)"]}): 0.0199,
+        MixtureKey({"pile_set_name": ["OpenSubtitles"]}): 0.0124,
+        MixtureKey({"pile_set_name": ["Wikipedia (en)"]}): 0.0919,
+        MixtureKey({"pile_set_name": ["DM Mathematics"]}): 0.0198,
+        MixtureKey({"pile_set_name": ["Ubuntu IRC"]}): 0.0074,
+        MixtureKey({"pile_set_name": ["BookCorpus2"]}): 0.0044,
+        MixtureKey({"pile_set_name": ["EuroParl"]}): 0.0043,
+        MixtureKey({"pile_set_name": ["HackerNews"]}): 0.0075,
+        MixtureKey({"pile_set_name": ["YoutubeSubtitles"]}): 0.0042,
+        MixtureKey({"pile_set_name": ["PhilPapers"]}): 0.0027,
+        MixtureKey({"pile_set_name": ["NIH ExPorter"]}): 0.0052,
+        MixtureKey({"pile_set_name": ["Enron Emails"]}): 0.0030,
+    })
+
+    mixture_ado = DynamicMixture(chunk_size=chunk_size, initial_mixture=mixture_pile_static, mixing_alg=AdoDynamicMixing(gamma2=0.1, count_normalizer=1024, use_same_step_size=True, delta_min=0.01, subsampling_interval=10, scaling_law_update_interval=1000, ignore_initial_steps=500, start_step=1000, logging_path="/scratch/mboether/titanado.json",variant="vanilla"))
+    
+    # Set this to the mixture you want to use.
+    mixture = mixture_ado 
 
     query_execution_args = QueryExecutionArgs(mixture=mixture, dp_groups=dp_degree, nodes_per_group=nodes_per_dp_group, num_workers=num_workers)
+    # Please note that chunk_reading_mixture_type="token" is currently necessary in torchtitan, since we did not implement tokenization outside of Mixtera in torchtitan.
+    # The torchtitan default is to apply BOS tokens. However, since this complicates evaluation (e.g., in the eval harness), we disable this here.
     streaming_args = ResultStreamingArgs(job_id=job_id, dp_group_id=dp_group_id, node_id=node_id, tunnel_via_server=tunnel_via_server, 
                                          chunk_reading_degree_of_parallelism=chunk_reading_degree_of_parallelism,
                                          chunk_reading_mixture_type="token", chunk_reading_tokenizer=tokenizer, chunk_reading_sequence_len=job_config.training.seq_len,
-                                         chunk_reading_token_overlapping=False, chunk_reading_eos=True, chunk_reading_bos=True)
+                                         chunk_reading_token_overlapping=False, chunk_reading_eos=True, chunk_reading_bos=False)
+    
+    query = Query.for_job(job_id).select(None) # TODO: Specify query in config file.
 
-    query = Query.for_job(job_id).select(None)
+    return_key_id = isinstance(mixture, DynamicMixture) # not the best criterion to decide this on, but suffices for now.
 
-    raw_dataset = MixteraTorchDataset(client, query, query_execution_args, streaming_args, checkpoint_path=None, return_key_id=True)
+    raw_dataset = MixteraTorchDataset(client, query, query_execution_args, streaming_args, checkpoint_path=None, return_key_id=return_key_id)
 
     # build dataloader
     data_loader = build_mixtera_data_loader(
-        raw_dataset, job_config.training.batch_size, num_workers
+        raw_dataset, job_config.training.batch_size, num_workers, return_key_id
     )
 
     # build model (using meta init)
@@ -381,7 +414,7 @@ def main(job_config: JobConfig):
 
             input_ids = input_ids.to(device_type)
             labels = labels.to(device_type)
-            key_ids = key_ids.to(device_type)
+            key_ids = key_ids.to(device_type) if key_ids is not None else key_ids
             optimizers.zero_grad()
 
             handle_losses = None
@@ -389,6 +422,7 @@ def main(job_config: JobConfig):
             losses_tensor = None
             counts_tensor = None
             init_async_start = 0
+            init_async_time = 0
 
             # apply context parallelism if cp is enabled
             optional_context_parallel_ctx = (
@@ -437,7 +471,7 @@ def main(job_config: JobConfig):
                     if per_domain_loss_module.has_per_domain_loss:
                         with torch.no_grad():
                             losses_tensor, counts_tensor, max_id_tensor = per_domain_loss_module.get_per_domain_stats()
-                            max_handle = torch.distributed.all_reduce(max_id_tensor, op=torch.distributed.ReduceOp.MAX, async_op=True, group=dp_group) # dp mesh vs dp group?
+                            max_handle = torch.distributed.all_reduce(max_id_tensor, op=torch.distributed.ReduceOp.MAX, async_op=True, group=dp_group) # TODO: dp mesh vs dp group?
                             per_domain_loss_module.reset_per_domain_stats()
                             max_handle.wait()
                             max_domain_id = max_id_tensor.item()
@@ -472,8 +506,9 @@ def main(job_config: JobConfig):
             optimizers.step()
             lr_schedulers.step()
 
-
             wait_mixtera_start = time.perf_counter()
+            mixtera_feedback_time = 0
+            wait_mixtera_time = 0
             if per_domain_loss_module.has_per_domain_loss:
                 handle_losses.wait()
                 handle_counts.wait()
@@ -558,7 +593,7 @@ def main(job_config: JobConfig):
                     f"{color.yellow}memory: {device_mem_stats.max_reserved_gib:5.2f}GiB"
                     f"({device_mem_stats.max_reserved_pct:.2f}%)  "
                     f"{color.blue}tps: {round(tps):,}  "
-                    f"timings: init_async_time={init_async_time}  wait_mixtera_time={wait_mixtera_time} mixtera_feedback_time={mixtera_feedback_time}  "
+                    f"timings: init_async_time={init_async_time} wait_mixtera_time={wait_mixtera_time} mixtera_feedback_time={mixtera_feedback_time}  "
                     f"{color.magenta}mfu: {mfu:.2f}%{color.reset}"
                 )
 
