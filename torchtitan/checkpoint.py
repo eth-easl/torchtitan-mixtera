@@ -245,7 +245,7 @@ class CheckpointManager:
     def _create_checkpoint_id(self, step: int) -> str:
         return os.path.join(self.folder, f"step-{step}")
 
-    def _save_last_step(self, curr_step: int) -> None:
+    def _save_last_step(self, curr_step: int) -> str:
         # We only consider saving weights only at the end of the training. So
         # this won't affect preemption and training resume. We also only allow
         # dtype conversion when we are checkpoint model weights only and the
@@ -273,9 +273,11 @@ class CheckpointManager:
             )
         else:
             logger.info(f"Saving a full checkpoint at last step, step {curr_step}.")
-
-        dcp.save(self.states, checkpoint_id=self._create_checkpoint_id(curr_step))
+        checkpoint_id = self._create_checkpoint_id(curr_step)
+        dcp.save(self.states, checkpoint_id=checkpoint_id)
         self.reset()
+
+        return checkpoint_id
 
     def _should_save(self, curr_step: int, force: bool = False) -> bool:
         if not self.enable_checkpoint:
@@ -350,7 +352,7 @@ class CheckpointManager:
             self.staging = True
             self.staging_id = checkpoint_id
 
-    def save(self, curr_step: int, force: bool = False) -> None:
+    def save(self, curr_step: int, force: bool = False, data_loader: Any = None) -> str | None:
         """
         force = True will force the checkpoint to be saved, even if the interval
         has not been reached.
@@ -358,13 +360,13 @@ class CheckpointManager:
         for initial seed checkpoint.
         """
         if not self._should_save(curr_step, force):
-            return
+            return None
 
         begin = time.monotonic()
         checkpoint_id = self._create_checkpoint_id(curr_step)
         self._async_wait()
         if force:
-            self._save_last_step(curr_step)
+            checkpoint_id = self._save_last_step(curr_step)
         elif self.async_mode == AsyncMode.ASYNC_WITH_PINNED_MEM:
             self._async_with_pinned_memory(checkpoint_id)
         elif self.async_mode == AsyncMode.ASYNC:
@@ -380,6 +382,8 @@ class CheckpointManager:
             "Finished saving the checkpoint (or staging if async is enabled)"
             f"in {time.monotonic() - begin:.2f} seconds."
         )
+
+        return checkpoint_id
 
     def maybe_wait_for_staging(self) -> None:
         if (
@@ -402,6 +406,18 @@ class CheckpointManager:
             sync_func()
             self.staging = False
 
+    @staticmethod
+    def _get_max_step(folder) -> int:
+        step_counts = []
+        for filename in os.listdir(folder):
+            match = re.search(r"step-(\d+)", filename)
+            metadata_probe = os.path.join(folder, filename, ".metadata")
+            if match and os.path.isfile(metadata_probe):
+                step_counts.append(int(match.group(1)))
+        if not step_counts:
+            return False
+        return max(step_counts)
+
     def load(self, step: int = -1) -> bool:
         if not self.enable_checkpoint:
             return False
@@ -411,15 +427,7 @@ class CheckpointManager:
             return False
 
         if step == -1:
-            step_counts = []
-            for filename in os.listdir(self.folder):
-                match = re.search(r"step-(\d+)", filename)
-                metadata_probe = os.path.join(self.folder, filename, ".metadata")
-                if match and os.path.isfile(metadata_probe):
-                    step_counts.append(int(match.group(1)))
-            if not step_counts:
-                return False
-            step = max(step_counts)
+            step = CheckpointManager._get_max_step(self.folder)
 
         # We won't have optimizer states to load, if we are loading a seed checkpoint
         states = {"model": self.states["model"]} if step == 0 else self.states

@@ -9,8 +9,7 @@ import time
 from datetime import timedelta
 
 import torch
-import torch.distributed._functional_collectives as funcol
-import torch.distributed.distributed_c10d as c10d
+import pathlib
 
 from torch.distributed.elastic.multiprocessing.errors import record
 
@@ -40,6 +39,7 @@ from mixtera.core.query.mixture import InferringMixture, StaticMixture, MixtureK
 from mixtera.core.query.mixture.dynamic_mixture import DynamicMixture
 from mixtera.core.algo.ado.ado import AdoDynamicMixing
 from mixtera.utils.feedback import handle_mixtera_feedback
+from mixtera.utils.checkpoint import handle_mixtera_checkpoint
 
 # Query execution in Mixtera takes long, and NCCL would time out otherwise.
 os.environ["NCCL_TIMEOUT"] = str(30 * 60 * 1000)
@@ -241,7 +241,24 @@ def main(job_config: JobConfig):
 
     return_key_id = isinstance(mixture, DynamicMixture) # not the best criterion to decide this on, but suffices for now.
 
-    raw_dataset = MixteraTorchDataset(client, query, query_execution_args, streaming_args, checkpoint_path=None, return_key_id=return_key_id)
+    checkpoints_folder = os.path.join(job_config.job.dump_folder, job_config.checkpoint.folder)
+    mix_step = job_config.checkpoint.load_step
+    if mix_step == -1:
+        mix_step = CheckpointManager._get_max_step(checkpoints_folder)
+    step_folder = os.path.join(checkpoints_folder, f"step-{mix_step}")
+    mixtera_id = os.path.join(step_folder, "mixtera.id")
+
+    if os.path.isdir(step_folder) and not os.path.isfile(mixtera_id):
+        logger.warning(f"Checkpoint directory {step_folder} exists but does not contain mixtera.id file - cannot load Mixtera checkpoint. If you load the model weights but not Mixtera, this may lead to unintended behavior. Please double check whether you are running on a checkpoint created using Mixtera.")
+
+    should_load_checkpoint = job_config.checkpoint.enable_checkpoint and os.path.isdir(step_folder) and os.path.isfile(mixtera_id)
+    checkpoint_mixtera_path = None if not should_load_checkpoint else pathlib.Path(step_folder)
+    if should_load_checkpoint:
+        logger.info(f"Loading Mixtera checkpoint from {step_folder}")
+    else:
+        logger.info("Will not load Mixtera checkpoint but run query from scratch.")
+
+    raw_dataset = MixteraTorchDataset(client, query, query_execution_args, streaming_args, checkpoint_path=checkpoint_mixtera_path, return_key_id=return_key_id)
 
     # build dataloader
     data_loader = build_mixtera_data_loader(
@@ -614,9 +631,11 @@ def main(job_config: JobConfig):
                 time_last_log = time.perf_counter()
                 device_memory_monitor.reset_peak_stats()
 
-                checkpoint.save(
+                checkpoint_path = checkpoint.save(
                     train_state.step, force=(train_state.step == job_config.training.steps)
                 )
+                if checkpoint_path is not None:
+                    handle_mixtera_checkpoint(data_loader, checkpoint_path, dp_rank, tp_rank, False)
 
                 # signal the profiler that the next profiling step has started
                 if torch_profiler:
