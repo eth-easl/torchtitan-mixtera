@@ -487,6 +487,9 @@ class PerDomainLoss(nn.Module):
 
         if key_ids is not None:
             with torch.no_grad():
+                if loss.dtype != self.losses_tensor.dtype:
+                    self.losses_tensor = self.losses_tensor.to(loss.dtype)
+
                 self.has_per_domain_loss = True
 
                 # Flatten key_ids
