@@ -39,7 +39,7 @@ llama3_configs = {
         multiple_of=4096,
         rope_theta=500000,
     ),
-    "ado": ModelArgs(dim=768, n_layers=12, n_heads=12, max_seq_len=1024, ffn_dim_multiplier=2048 / (2 * 768)), # dim 768 or 2048 - need to check parameters!
+    "ado": ModelArgs(dim=768, n_layers=12, n_heads=12, max_seq_len=1024),
     "ado1b": ModelArgs(dim=2048, n_layers=24, n_heads=16, max_seq_len=1024, multiple_of=8, ffn_dim_multiplier=None),
     "doremi500": ModelArgs(dim=1024, n_layers=12, n_heads=16, max_seq_len=1024, ffn_dim_multiplier=8192 / 2730) # enforces hidden dim 8192
 }
