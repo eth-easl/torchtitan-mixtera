@@ -15,9 +15,15 @@ class MixteraWrapper(torch.utils.data.IterableDataset):
         for item in self.torch_ds:
             assert (self.return_key_id and isinstance(item, tuple) and len(item) == 2) or (not isinstance(item, tuple)), f"Inconsistent state:\n self.return_key_id = {self.return_key_id}\n item = {item}\n type(item)={type(item)}"
 
-            key_id, sample = item if self.return_key_id else None, item
-            
-            assert isinstance(key_id, int)
+            if self.return_key_id:
+                key_id = item[0]
+                sample = item[1]
+            else:
+                key_id = None
+                sample = item
+
+            del item
+            assert isinstance(key_id, int) or (key_id is None and not self.return_key_id), f"key id = {key_id} sample = {sample} item = {item} return_key_id = {self.return_key_id}"
             assert isinstance(sample, list)
             assert isinstance(sample[0], int)
 
