@@ -19,7 +19,6 @@ class MixteraWrapper(torch.utils.data.IterableDataset):
                 key_id = item[0]
                 sample = item[1]
             else:
-                key_id = None
                 sample = item
 
             del item
@@ -31,9 +30,12 @@ class MixteraWrapper(torch.utils.data.IterableDataset):
             input = x[:-1]
             label = x[1:]
             seq_len = len(input)
-            key_ids = torch.full((seq_len,), key_id, dtype=torch.long) if self.return_key_id else None
-
-            yield input, label, key_ids
+            
+            if not self.return_key_id:
+                yield input, label
+            else:
+                key_ids = torch.full((seq_len,), key_id, dtype=torch.long) if self.return_key_id else None
+                yield input, label, key_ids
 
     def __getstate__(self):
         state = self.__dict__.copy()
