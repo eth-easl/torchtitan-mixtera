@@ -20,6 +20,7 @@ class MixteraWrapper(torch.utils.data.IterableDataset):
                 sample = item[1]
             else:
                 sample = item
+                key_id = None
 
             del item
             assert isinstance(key_id, int) or (key_id is None and not self.return_key_id), f"key id = {key_id} sample = {sample} item = {item} return_key_id = {self.return_key_id}"
