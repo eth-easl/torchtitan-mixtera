@@ -7,6 +7,7 @@ TODO:
 - fully understand dp shard vs dp replica and implications on mixtera. Both in terms of which data we send and for the feedback all reduce ops, which group should we use.
 - maybe move MixteraWrapper inside mixtera for torchtitan support?
 - Maybe support for tokenization outside mixtera?
+- minor (and unrelated to mixtera): torchtitan currently does not have a `tie_word_embeddings` option, this is why the 124M model from nanotron has more parameters here. solution would be removing self.output in the transformer and setting output = torch.matmul(h, self.tok_embeddings.weight.t())
 
 <div align="center">
 
