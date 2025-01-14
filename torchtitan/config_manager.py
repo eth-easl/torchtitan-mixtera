@@ -604,6 +604,20 @@ class JobConfig:
             action="store_true",
         )
 
+        self.parser.add_argument(
+            "--mixtera.ip",
+            type=str,
+            default="127.0.0.1",
+            help="ip of mixtera server",
+        )
+
+        self.parser.add_argument(
+            "--mixtera.port",
+            type=int,
+            default=8080,
+            help="port of mixtera server",
+        )
+
     def to_dict(self):
         return self.args_dict
 

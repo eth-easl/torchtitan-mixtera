@@ -108,7 +108,7 @@ def main(job_config: JobConfig):
     # tokenizer = build_tokenizer(tokenizer_type, job_config.model.tokenizer_path)
     
     # Mixtera setup (todo: make this config parameter)
-    client = MixteraClient.from_remote("127.0.0.1", 8888)
+    client = MixteraClient.from_remote(job_config.mixtera.ip, job_config.mixtera.port)
     job_id = "torchtitan_test"
     chunk_size = 512
     tunnel_via_server = False
