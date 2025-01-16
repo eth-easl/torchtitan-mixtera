@@ -432,7 +432,13 @@ def main(job_config: JobConfig):
             # get batch
             data_load_start = time.perf_counter()
             batch = next(data_iterator)
-            input_ids, labels, key_ids = batch
+            if len(batch) == 3:
+                input_ids, labels, key_ids = batch
+            else:
+                assert len(batch) == 2
+                input_ids, labels = batch
+                key_ids = None
+
             ntokens_since_last_log += labels.numel()
             data_loading_times.append(time.perf_counter() - data_load_start)
 
