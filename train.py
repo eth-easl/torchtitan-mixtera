@@ -641,7 +641,7 @@ def main(job_config: JobConfig):
                     train_state.step, force=(train_state.step == job_config.training.steps)
                 )
                 if checkpoint_path is not None:
-                    handle_mixtera_checkpoint(data_loader, checkpoint_path, dp_rank, tp_rank, False)
+                    handle_mixtera_checkpoint(data_loader, pathlib.Path(checkpoint_path), dp_rank, tp_rank, False)
 
                 # signal the profiler that the next profiling step has started
                 if torch_profiler:
