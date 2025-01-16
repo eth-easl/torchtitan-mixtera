@@ -408,6 +408,9 @@ class CheckpointManager:
 
     @staticmethod
     def _get_max_step(folder) -> int:
+        if not os.path.isdir(folder):
+            return -1
+        
         step_counts = []
         for filename in os.listdir(folder):
             match = re.search(r"step-(\d+)", filename)
