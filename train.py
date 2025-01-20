@@ -271,7 +271,7 @@ def main(job_config: JobConfig):
     elif job_config.training.dataloader in {"huggingface", "hf"}:
         tokenizer = build_tokenizer(job_config.training.tokenizer, job_config.model.tokenizer_path)
         # build dataloader
-        streaming = not job_config.huggingface.disable_streaming
+        streaming = not job_config.hf.disable_streaming
         data_loader = build_hf_data_loader(
             job_config.training.dataset,
             job_config.training.dataset_path,
