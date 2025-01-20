@@ -22,7 +22,7 @@ from datasets.distributed import split_dataset_by_node
 
 def _load_c4_dataset(dataset_path: str, streaming: bool):
     """Load C4 dataset with default configuration."""
-    logger.debug(f"Loading c4 dataset with streaming = {streaming}")
+    logger.info(f"Loading c4 dataset with streaming = {streaming}")
     return load_dataset(dataset_path, name="en", split="train", streaming=streaming, trust_remote_code=True)
 
 
@@ -113,26 +113,26 @@ class HuggingFaceDataset(IterableDataset, Stateful):
 
         while True:
             for sample in self._get_data_iter():
-                logger.debug(f"got sample = {sample}")
+                logger.info(f"got sample = {sample}")
                 # Use the dataset-specific text processor
                 sample_text = self._text_processor(sample)
-                logger.debug(f"got sample_text = {sample}")
+                logger.info(f"got sample_text = {sample}")
 
                 sample_tokens = self._tokenizer.encode(sample_text, bos=True, eos=True)
-                logger.debug(f"got sample_tokens = {sample}")
+                logger.info(f"got sample_tokens = {sample}")
 
                 self._all_tokens.extend(sample_tokens)
                 self._sample_idx += 1
 
                 while len(self._all_tokens) >= max_buffer_token_len:
-                    logger.debug("instantiating tensor")
+                    logger.info("instantiating tensor")
                     x = torch.LongTensor(self._all_tokens[:max_buffer_token_len])
                     # update tokens to the remaining tokens
                     self._all_tokens = self._all_tokens[max_buffer_token_len:]
-                    logger.debug("updated tokens")
+                    logger.info("updated tokens")
                     input = x[:-1]
                     label = x[1:]
-                    logger.debug(f"yielding input = {input} label = {label}")
+                    logger.info(f"yielding input = {input} label = {label}")
                     yield input, label
 
             if not self.infinite:
@@ -261,7 +261,7 @@ def build_hf_data_loader(
     infinite: bool = False,
 ):
     """Build a data loader for HuggingFace datasets."""
-    logger.debug(f"building a hf data loader with {num_workers} workers, batch size {batch_size}, seq len {seq_len}, world size {world_size}, rank {rank}, streaming {streaming}")
+    logger.info(f"building a hf data loader with {num_workers} workers, batch size {batch_size}, seq len {seq_len}, world size {world_size}, rank {rank}, streaming {streaming}")
     hf_class = HuggingFaceDataset if streaming else MappedHuggingFaceDataset
     hf_ds = hf_class(
         dataset_name, dataset_path, tokenizer, seq_len, world_size, rank, infinite
