@@ -20,9 +20,10 @@ from datasets import Dataset, load_dataset
 from datasets.distributed import split_dataset_by_node
 
 
-def _load_c4_dataset(dataset_path: str):
+def _load_c4_dataset(dataset_path: str, streaming: bool):
     """Load C4 dataset with default configuration."""
-    return load_dataset(dataset_path, name="en", split="train", streaming=True)
+    logger.debug(f"Loading c4 dataset with streaming = {streaming}")
+    return load_dataset(dataset_path, name="en", split="train", streaming=streaming, trust_remote_code=True)
 
 
 def _process_c4_text(sample: Dict[str, Any]) -> str:
@@ -85,7 +86,7 @@ class HuggingFaceDataset(IterableDataset, Stateful):
         path, dataset_loader, text_processor = _validate_dataset(
             dataset_name, dataset_path
         )
-        ds = dataset_loader(path)
+        ds = dataset_loader(path, True)
 
         self.dataset_name = dataset_name
         self._data = split_dataset_by_node(ds, rank, world_size)
@@ -163,7 +164,7 @@ class MappedHuggingFaceDataset(Dataset, Stateful):
         path, dataset_loader, text_processor = _validate_dataset(
             dataset_name, dataset_path
         )
-        ds = dataset_loader(path, streaming=False)
+        ds = dataset_loader(path, False)
 
         self.dataset_name = dataset_name
         self._tokenizer = tokenizer
