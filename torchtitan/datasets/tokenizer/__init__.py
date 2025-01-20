@@ -17,4 +17,4 @@ def build_tokenizer(tokenizer_type: str, tokenizer_path: str) -> Tokenizer:
         return TikTokenizer(tokenizer_path)
     else:
         logger.info(f"Building {tokenizer_type} tokenizer using huggingface")
-        return HuggingFaceTokenizer(tokenizer_path)
+        return HuggingFaceTokenizer(tokenizer_type)
