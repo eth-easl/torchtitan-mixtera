@@ -158,11 +158,6 @@ def main(job_config: JobConfig):
     assert dp_degree_mix == dp_degree
 
     logger.info(f"dp_group_id: {dp_group_id}, dp_degree: {dp_degree}, node_id: {node_id}, nodes_per_dp_group: {nodes_per_dp_group}")
-
-
-    # build tokenizer
-    # tokenizer_type = model_name_to_tokenizer[model_name]
-    # tokenizer = build_tokenizer(tokenizer_type, job_config.model.tokenizer_path)
     
     if job_config.training.dataloader == "Mixtera":
         client = MixteraClient.from_remote(job_config.mixtera.ip, job_config.mixtera.port)
@@ -448,11 +443,13 @@ def main(job_config: JobConfig):
     ) as torch_profiler, maybe_enable_memory_snapshot(
         job_config, global_step=train_state.step
     ) as memory_profiler:
+        logger.debug("entered context.")
         while train_state.step < job_config.training.steps:
             train_state.step += 1
             gc_handler.run(train_state.step)
 
             # get batch
+            logger.debug("getting batch.")
             data_load_start = time.perf_counter()
             batch = next(data_iterator)
 
@@ -524,7 +521,7 @@ def main(job_config: JobConfig):
                     pred = model(input_ids)
                     logger.debug(f"pred = {pred}")
                     loss = per_domain_loss_module(pred, labels, key_ids)
-                    logger.debug(f"loss = {los}")
+                    logger.debug(f"loss = {loss}")
                     # pred.shape=(bs, seq_len, vocab_size)
                     # need to free to before bwd to avoid peaking memory
                     del pred
