@@ -141,14 +141,84 @@ class HuggingFaceDataset(IterableDataset, Stateful):
     def state_dict(self):
         return {"token_buffer": self._all_tokens, "sample_idx": self._sample_idx}
 
+class MappedHuggingFaceDataset(Dataset, Stateful):
+    """Mapped dataset using torch.utils.data.Dataset for preprocessed data."""
+
+    def __init__(
+        self,
+        dataset_name: str,
+        dataset_path: Optional[str],
+        tokenizer: Tokenizer,
+        seq_len: int = 2048,
+        world_size: int = 1,
+        rank: int = 0,
+        infinite: bool = False
+    ) -> None:
+        if infinite:
+            raise RuntimeError("Cannot have inifinite mapped dataset.")
+        
+        # Force lowercase for consistent comparison
+        dataset_name = dataset_name.lower()
+
+        path, dataset_loader, text_processor = _validate_dataset(
+            dataset_name, dataset_path
+        )
+        ds = dataset_loader(path, streaming=False)
+
+        self.dataset_name = dataset_name
+        self._tokenizer = tokenizer
+        self.seq_len = seq_len
+        self._text_processor = text_processor
+
+        # Use split_dataset_by_node to partition the dataset
+        self._data = split_dataset_by_node(ds, rank, world_size)
+
+        # Preprocess data: tokenize and flatten
+        def tokenize_function(examples):
+            sample_text = self._text_processor(examples)
+            sample_tokens = self._tokenizer.encode(sample_text, bos=True, eos=True)
+            return {"tokens": sample_tokens}
+
+        self._data = self._data.map(tokenize_function, batched=False, remove_columns=self._data.column_names)
+
+        from itertools import chain
+
+        all_tokens = list(chain.from_iterable(self._data["tokens"]))
+
+        # Truncate to a multiple of seq_len
+        total_len = (len(all_tokens) // seq_len) * seq_len
+        all_tokens = all_tokens[:total_len]
+
+        # Split into input and label sequences
+        inputs = torch.tensor(all_tokens).view(-1, seq_len)
+        labels = torch.tensor(all_tokens[1:] + [self._tokenizer.eos_token_id]).view(-1, seq_len)
+
+        self.inputs = inputs
+        self.labels = labels
+
+    def __len__(self):
+        return len(self.inputs)
+
+    def __getitem__(self, idx):
+        input_ids = self.inputs[idx]
+        label_ids = self.labels[idx]
+        return input_ids, label_ids
+
+    def load_state_dict(self, state_dict):
+        # Mapped datasets are stateless in this context
+        pass
+
+    def state_dict(self):
+        # Mapped datasets are stateless in this context
+        return {}
 
 class DPAwareDataLoader(StatefulDataLoader, Stateful):
     """
     A wrapper around the StatefulDataLoader that ensures that the state is stored only once per DP rank.
     """
 
-    def __init__(self, dp_rank: int, hf_ds: IterableDataset, batch_size: int):
-        super().__init__(hf_ds, batch_size)
+    def __init__(self, dp_rank: int, hf_ds: IterableDataset, batch_size: int, num_workers: int):
+        super().__init__(hf_ds, batch_size, num_workers=num_workers)
         self._dp_rank = dp_rank
         self._rank_id = f"dp_rank_{dp_rank}"
 
@@ -177,10 +247,14 @@ def build_hf_data_loader(
     seq_len: int,
     world_size: int,
     rank: int,
+    num_workers: int,
+    streaming: bool,
     infinite: bool = True,
 ):
     """Build a data loader for HuggingFace datasets."""
-    hf_ds = HuggingFaceDataset(
+    logger.debug(f"building a hf data loader with {num_workers} workers.")
+    hf_class = HuggingFaceDataset if streaming else MappedHuggingFaceDataset
+    hf_ds = hf_class(
         dataset_name, dataset_path, tokenizer, seq_len, world_size, rank, infinite
     )
-    return DPAwareDataLoader(rank, hf_ds, batch_size=batch_size)
+    return DPAwareDataLoader(rank, hf_ds, batch_size=batch_size, num_workers=num_workers)

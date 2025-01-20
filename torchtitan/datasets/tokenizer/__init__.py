@@ -6,13 +6,15 @@
 
 from torchtitan.datasets.tokenizer.tiktoken import TikTokenizer
 from torchtitan.datasets.tokenizer.tokenizer import Tokenizer
+from torchtitan.datasets.tokenizer.huggingface import HuggingFaceTokenizer
 
 from torchtitan.logging import logger
 
 
 def build_tokenizer(tokenizer_type: str, tokenizer_path: str) -> Tokenizer:
-    logger.info(f"Building {tokenizer_type} tokenizer locally from {tokenizer_path}")
     if tokenizer_type == "tiktoken":
+        logger.info(f"Building {tokenizer_type} tokenizer locally from {tokenizer_path}")
         return TikTokenizer(tokenizer_path)
     else:
-        raise ValueError(f"Unknown tokenizer type: {tokenizer_type}")
+        logger.info(f"Building {tokenizer_type} tokenizer using huggingface")
+        return HuggingFaceTokenizer(tokenizer_path)
