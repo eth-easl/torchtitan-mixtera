@@ -10,7 +10,7 @@ class HuggingFaceTokenizer(Tokenizer):
         super().__init__(tokenizer_path)
         # Load the tokenizer
         self.tokenizer = AutoTokenizer.from_pretrained(tokenizer_path, use_fast=True)
-        self._n_words = self.tokenizer.vocab_size
+        self._n_words = max(self.tokenizer.vocab_size, len(self.tokenizer)) + 100
         # BOS / EOS token IDs
         self.bos_id = self.tokenizer.bos_token_id
         self.eos_id = self.tokenizer.eos_token_id
