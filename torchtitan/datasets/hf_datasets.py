@@ -250,10 +250,10 @@ def build_hf_data_loader(
     rank: int,
     num_workers: int,
     streaming: bool,
-    infinite: bool = True,
+    infinite: bool = False,
 ):
     """Build a data loader for HuggingFace datasets."""
-    logger.debug(f"building a hf data loader with {num_workers} workers.")
+    logger.debug(f"building a hf data loader with {num_workers} workers, batch size {batch_size}, seq len {seq_len}, world size {world_size}, rank {rank}, streaming {streaming}")
     hf_class = HuggingFaceDataset if streaming else MappedHuggingFaceDataset
     hf_ds = hf_class(
         dataset_name, dataset_path, tokenizer, seq_len, world_size, rank, infinite
