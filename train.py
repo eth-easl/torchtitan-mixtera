@@ -518,7 +518,7 @@ def main(job_config: JobConfig):
             else:
                 # Non-PP forward / backward
                 with train_context(optional_context_parallel_ctx):
-                    logger.info(f"doing fwd pass on batch = {batch.shape}")
+                    logger.info(f"doing fwd pass on input_ids = {input_ids.shape} labels = {labels.shape}")
                     pred = model(input_ids)
                     logger.info(f"pred = {pred}")
                     loss = per_domain_loss_module(pred, labels, key_ids)
