@@ -132,7 +132,7 @@ class WandBLogger(BaseLogger):
         self.wandb = wandb
         self.tag = tag
 
-        current_time = datetime.datetime.now().strftime("%d/%m/%Y_%H:%M:%S")
+        current_time = datetime.now().strftime("%d/%m/%Y_%H:%M:%S")
         self.wandb.init(
             project=project,
             name=f"{current_time}_{name}",
