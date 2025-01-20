@@ -455,6 +455,10 @@ def main(job_config: JobConfig):
             # get batch
             data_load_start = time.perf_counter()
             batch = next(data_iterator)
+
+            logger.debug("got batch from iterator.")
+            logger.debug(batch)
+
             if len(batch) == 3:
                 input_ids, labels, key_ids = batch
             else:
@@ -468,6 +472,9 @@ def main(job_config: JobConfig):
             input_ids = input_ids.to(device_type)
             labels = labels.to(device_type)
             key_ids = key_ids.to(device_type) if key_ids is not None else key_ids
+
+            logger.debug(f"moved data to {device_type}")
+
             optimizers.zero_grad()
 
             handle_losses = None
@@ -515,7 +522,9 @@ def main(job_config: JobConfig):
                 # Non-PP forward / backward
                 with train_context(optional_context_parallel_ctx):
                     pred = model(input_ids)
+                    logger.debug(f"pred = {pred}")
                     loss = per_domain_loss_module(pred, labels, key_ids)
+                    logger.debug(f"loss = {los}")
                     # pred.shape=(bs, seq_len, vocab_size)
                     # need to free to before bwd to avoid peaking memory
                     del pred
