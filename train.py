@@ -443,18 +443,13 @@ def main(job_config: JobConfig):
     ) as torch_profiler, maybe_enable_memory_snapshot(
         job_config, global_step=train_state.step
     ) as memory_profiler:
-        logger.info("entered context.")
         while train_state.step < job_config.training.steps:
             train_state.step += 1
             gc_handler.run(train_state.step)
 
             # get batch
-            logger.info("getting batch.")
             data_load_start = time.perf_counter()
             batch = next(data_iterator)
-
-            logger.info("got batch from iterator.")
-            logger.info(batch)
 
             if len(batch) == 3:
                 input_ids, labels, key_ids = batch
@@ -469,8 +464,6 @@ def main(job_config: JobConfig):
             input_ids = input_ids.to(device_type)
             labels = labels.to(device_type)
             key_ids = key_ids.to(device_type) if key_ids is not None else key_ids
-
-            logger.info(f"moved data to {device_type}")
 
             optimizers.zero_grad()
 
@@ -518,11 +511,8 @@ def main(job_config: JobConfig):
             else:
                 # Non-PP forward / backward
                 with train_context(optional_context_parallel_ctx):
-                    logger.info(f"doing fwd pass on input_ids = {input_ids.shape} labels = {labels.shape}")
                     pred = model(input_ids)
-                    logger.info(f"pred = {pred}")
                     loss = per_domain_loss_module(pred, labels, key_ids)
-                    logger.info(f"loss = {loss}")
                     # pred.shape=(bs, seq_len, vocab_size)
                     # need to free to before bwd to avoid peaking memory
                     del pred
