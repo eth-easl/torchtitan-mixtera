@@ -113,18 +113,26 @@ class HuggingFaceDataset(IterableDataset, Stateful):
 
         while True:
             for sample in self._get_data_iter():
+                logger.debug(f"got sample = {sample}")
                 # Use the dataset-specific text processor
                 sample_text = self._text_processor(sample)
+                logger.debug(f"got sample_text = {sample}")
+
                 sample_tokens = self._tokenizer.encode(sample_text, bos=True, eos=True)
+                logger.debug(f"got sample_tokens = {sample}")
+
                 self._all_tokens.extend(sample_tokens)
                 self._sample_idx += 1
 
                 while len(self._all_tokens) >= max_buffer_token_len:
+                    logger.debug("instantiating tensor")
                     x = torch.LongTensor(self._all_tokens[:max_buffer_token_len])
                     # update tokens to the remaining tokens
                     self._all_tokens = self._all_tokens[max_buffer_token_len:]
+                    logger.debug("updated tokens")
                     input = x[:-1]
                     label = x[1:]
+                    logger.debug(f"yielding input = {input} label = {label}")
                     yield input, label
 
             if not self.infinite:
