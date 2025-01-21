@@ -135,6 +135,10 @@ class JobConfig:
             help="Whether to disable color printing in logs",
         )
         self.parser.add_argument(
+            "--metrics.disable_console_log",
+            action="store_true",
+        )
+        self.parser.add_argument(
             "--metrics.save_tb_folder",
             type=str,
             default="tb",
@@ -437,6 +441,18 @@ class JobConfig:
         )
         self.parser.add_argument(
             "--training.tokenizer", type=str, default="EleutherAI/gpt-neox-20b", help="Which tokenizer to use. If using huggingface and setting this to tiktoken, uses default torchtitan tiktoken tokenizer."
+        )
+        self.parser.add_argument(
+            "--training.add_eos",
+            action="store_true",
+            default=True,
+            help="Whether to add EOS at end of sequence",
+        )
+        self.parser.add_argument(
+            "--training.add_bos",
+            action="store_true",
+            default=True,
+            help="Whether to add BOS at beginning of sequence",
         )
         # checkpointing configs
         self.parser.add_argument(

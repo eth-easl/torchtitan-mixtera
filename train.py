@@ -167,6 +167,11 @@ def main(job_config: JobConfig):
         chunk_reading_degree_of_parallelism = job_config.mixtera.chunk_reading_degree_of_parallelism
         num_workers = job_config.training.dl_worker
         tokenizer = job_config.training.tokenizer
+        add_bos = job_config.training.add_bos
+        add_eos = job_config.training.add_eos
+
+        if add_bos:
+            logger.info("Adding BOS. Are you sure you want that?")
 
         ## "Natural" baseline from ADO paper
         mixture_pile_static = StaticMixture(chunk_size=chunk_size, mixture={
@@ -231,7 +236,7 @@ def main(job_config: JobConfig):
         streaming_args = ResultStreamingArgs(job_id=job_id, dp_group_id=dp_group_id, node_id=node_id, tunnel_via_server=tunnel_via_server, 
                                             chunk_reading_degree_of_parallelism=chunk_reading_degree_of_parallelism,
                                             chunk_reading_mixture_type="token", chunk_reading_tokenizer=tokenizer, chunk_reading_sequence_len=job_config.training.seq_len,
-                                            chunk_reading_token_overlapping=False, chunk_reading_eos=True, chunk_reading_bos=False)
+                                            chunk_reading_token_overlapping=False, chunk_reading_eos=add_eos, chunk_reading_bos=add_bos)
         
         query = Query.for_job(job_id).select(None) # TODO: Specify query in config file.
 
@@ -276,7 +281,9 @@ def main(job_config: JobConfig):
             dp_degree,
             dp_rank,
             job_config.training.dl_worker,
-            streaming
+            streaming,
+            job_config.training.add_bos,
+            job_config.training.add_eos
         )
         vocab_size = tokenizer.n_words
     else:
@@ -645,15 +652,16 @@ def main(job_config: JobConfig):
                 }
                 metric_logger.log(metrics, step=train_state.step)
 
-                logger.info(
-                    f"{color.cyan}step: {train_state.step:2}  "
-                    f"{color.green}loss: {global_avg_loss:7.4f}  "
-                    f"{color.yellow}memory: {device_mem_stats.max_reserved_gib:5.2f}GiB"
-                    f"({device_mem_stats.max_reserved_pct:.2f}%)  "
-                    f"{color.blue}tps: {round(tps):,}  "
-                    f"timings: init_async_time={init_async_time} wait_mixtera_time={wait_mixtera_time} mixtera_feedback_time={mixtera_feedback_time}  "
-                    f"{color.magenta}mfu: {mfu:.2f}%{color.reset}"
-                )
+                if not job_config.metrics.disable_console_log:
+                    logger.info(
+                        f"{color.cyan}step: {train_state.step:2}  "
+                        f"{color.green}loss: {global_avg_loss:7.4f}  "
+                        f"{color.yellow}memory: {device_mem_stats.max_reserved_gib:5.2f}GiB"
+                        f"({device_mem_stats.max_reserved_pct:.2f}%)  "
+                        f"{color.blue}tps: {round(tps):,}  "
+                        f"timings: init_async_time={init_async_time} wait_mixtera_time={wait_mixtera_time} mixtera_feedback_time={mixtera_feedback_time}  "
+                        f"{color.magenta}mfu: {mfu:.2f}%{color.reset}"
+                    )
 
                 losses_since_last_log.clear()
                 ntokens_since_last_log = 0

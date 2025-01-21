@@ -78,6 +78,8 @@ class HuggingFaceDataset(IterableDataset, Stateful):
         seq_len: int = 2048,
         world_size: int = 1,
         rank: int = 0,
+        add_bos: bool = True,
+        add_eos: bool = True,
         infinite: bool = False,
     ) -> None:
         # Force lowercase for consistent comparison
@@ -94,6 +96,8 @@ class HuggingFaceDataset(IterableDataset, Stateful):
         self.seq_len = seq_len
         self.infinite = infinite
         self._text_processor = text_processor
+        self._add_bos = add_bos
+        self._add_eos = add_eos
 
         # Variables for checkpointing
         self._sample_idx = 0
@@ -116,7 +120,7 @@ class HuggingFaceDataset(IterableDataset, Stateful):
                 # Use the dataset-specific text processor
                 sample_text = self._text_processor(sample)
 
-                sample_tokens = self._tokenizer.encode(sample_text, bos=True, eos=True)
+                sample_tokens = self._tokenizer.encode(sample_text, bos=self._add_bos, eos=self._add_eos)
 
                 self._all_tokens.extend(sample_tokens)
                 self._sample_idx += 1
@@ -155,6 +159,8 @@ class MappedHuggingFaceDataset(Dataset, Stateful):
         seq_len: int = 2048,
         world_size: int = 1,
         rank: int = 0,
+        add_bos: bool = True,
+        add_eos: bool = True,
         infinite: bool = False
     ) -> None:
         if infinite:
@@ -172,6 +178,8 @@ class MappedHuggingFaceDataset(Dataset, Stateful):
         self._tokenizer = tokenizer
         self.seq_len = seq_len
         self._text_processor = text_processor
+        self._add_bos = add_bos
+        self._add_eos = add_eos
 
         # Use split_dataset_by_node to partition the dataset
         self._data = split_dataset_by_node(ds, rank, world_size)
@@ -179,7 +187,7 @@ class MappedHuggingFaceDataset(Dataset, Stateful):
         # Preprocess data: tokenize and flatten
         def tokenize_function(examples):
             sample_text = self._text_processor(examples)
-            sample_tokens = self._tokenizer.encode(sample_text, bos=True, eos=True)
+            sample_tokens = self._tokenizer.encode(sample_text, bos=self._add_bos, eos=self._add_eos)
             return {"tokens": sample_tokens}
 
         self._data = self._data.map(tokenize_function, batched=False, remove_columns=self._data.column_names)
@@ -252,12 +260,14 @@ def build_hf_data_loader(
     rank: int,
     num_workers: int,
     streaming: bool,
+    add_bos: bool,
+    add_eos: bool,
     infinite: bool = False,
 ):
     """Build a data loader for HuggingFace datasets."""
-    logger.info(f"building a hf data loader with {num_workers} workers, batch size {batch_size}, seq len {seq_len}, world size {world_size}, rank {rank}, streaming {streaming}")
+    logger.info(f"building a hf data loader with {num_workers} workers, batch size {batch_size}, seq len {seq_len}, world size {world_size}, rank {rank}, streaming {streaming}, add_bos {add_bos}, add_eos {add_eos}")
     hf_class = HuggingFaceDataset if streaming else MappedHuggingFaceDataset
     hf_ds = hf_class(
-        dataset_name, dataset_path, tokenizer, seq_len, world_size, rank, infinite
+        dataset_name, dataset_path, tokenizer, seq_len, world_size, rank, add_bos, add_eos, infinite
     )
     return DPAwareDataLoader(rank, hf_ds, batch_size=batch_size, num_workers=num_workers)
