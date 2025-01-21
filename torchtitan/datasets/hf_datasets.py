@@ -30,6 +30,13 @@ def _process_c4_text(sample: Dict[str, Any]) -> str:
     """Process C4 dataset sample text."""
     return sample["text"]
 
+def _load_bm_dataset(dataset_path: str, streaming: bool, ext: str):
+    logger.info(f"Loading benchmark dataset with streaming = {streaming} and ext = {ext}")
+    return load_dataset(dataset_path, streaming=streaming, data_files=[f"*.{ext}"], split="train")
+
+def _process_bm_text(sample: Dict[str, Any]) -> str:
+    return sample["text"]
+
 
 @dataclass
 class DatasetConfig:
@@ -39,6 +46,7 @@ class DatasetConfig:
 
 
 # Add your dataset here here - more information at docs/datasets.md
+# Path gets only used if dataset_path is not set!
 DATASETS = {
     "c4": DatasetConfig(
         path="allenai/c4",
@@ -47,8 +55,28 @@ DATASETS = {
     ),
     "c4_test": DatasetConfig(
         path="tests/assets/c4_test",
-        loader=lambda path: load_dataset(path, split="train"),
+        loader=lambda path, streaming: load_dataset(path, split="train", streaming=streaming),
         text_processor=_process_c4_text,
+    ),
+    "benchmark_jsonl": DatasetConfig(
+        path="/iopsstor/scratch/cscs/mbther/benchmark_data/jsonl",
+        loader=lambda path, streaming: _load_bm_dataset(path, streaming, "jsonl"),
+        text_processor=_process_bm_text,
+    ),
+    "benchmark_parquet": DatasetConfig(
+        path="/iopsstor/scratch/cscs/mbther/benchmark_data/parquet",
+        loader=lambda path, streaming: _load_bm_dataset(path, streaming, "parquet"),
+        text_processor=_process_bm_text,
+    ),
+    "benchmark_jsonlzst": DatasetConfig(
+        path="/iopsstor/scratch/cscs/mbther/benchmark_data/jsonl.zst",
+        loader=lambda path, streaming: _load_bm_dataset(path, streaming, "jsonl.zst"),
+        text_processor=_process_bm_text,
+    ),
+    "benchmark_webdatasets": DatasetConfig(
+        path="/iopsstor/scratch/cscs/mbther/benchmark_data/tar",
+        loader=lambda path, streaming: _load_bm_dataset(path, streaming, "tar"),
+        text_processor=_process_bm_text,
     ),
 }
 
