@@ -159,7 +159,8 @@ def main(job_config: JobConfig):
 
     logger.info(f"dp_group_id: {dp_group_id}, dp_degree: {dp_degree}, node_id: {node_id}, nodes_per_dp_group: {nodes_per_dp_group}")
     
-    if job_config.training.dataloader == "Mixtera":
+    dataloader_str = str(job_config.training.dataloader).lower()
+    if dataloader_str == "mixtera":
         client = MixteraClient.from_remote(job_config.mixtera.ip, job_config.mixtera.port)
         job_id = job_config.mixtera.job_id
         chunk_size = job_config.mixtera.chunk_size
@@ -268,7 +269,7 @@ def main(job_config: JobConfig):
         vocab_size = job_config.mixtera.vocab_size
         if vocab_size < 1:
             raise RuntimeError(f"You did not provide mixtera.vocab_size!")
-    elif job_config.training.dataloader in {"huggingface", "hf"}:
+    elif dataloader_str in {"huggingface", "hf"}:
         tokenizer = build_tokenizer(job_config.training.tokenizer, job_config.model.tokenizer_path)
         # build dataloader
         streaming = not job_config.hf.disable_streaming
