@@ -437,6 +437,8 @@ def main(job_config: JobConfig):
 
     checkpoint.reset()
 
+    utils.global_barrier() # Global barrier necessary for mixtera to ensure query has been executed.
+
     # train loop
     logger.info(
         f"Training starts at step {train_state.step + 1}, "
