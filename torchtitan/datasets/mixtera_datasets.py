@@ -3,7 +3,8 @@ from mixtera.torch import MixteraTorchDataset
 
 import torch
 from torch.utils.data import DataLoader
-
+from torchtitan import utils
+from torchtitan.logging import logger
 
 
 class MixteraWrapper(torch.utils.data.IterableDataset):
@@ -50,6 +51,9 @@ def build_mixtera_data_loader(
     num_workers: int,
     return_key_id: bool
 ):
+    logger.info("Global barrier before building Mixtera dataloader")
+    utils.global_barrier()
+    logger.info("Global barrier before building Mixtera datalaoder done.")
     # TODO: This currently assumes we tokenize in Mixtera. Full support for tokenization/no tokenization we should implement later.
     return DataLoader(
         MixteraWrapper(mixtera_ds, return_key_id), # should be put into mixtera
