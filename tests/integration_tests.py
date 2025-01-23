@@ -378,14 +378,22 @@ def build_test_list():
             [
                 [
                     "--checkpoint.enable_checkpoint",
-                    "--experimental.pipeline_parallel_degree 2",
+                    "--training.tensor_parallel_degree=2",
+                    "--experimental.context_parallel_degree=2",
+                    "--training.enable_cpu_offload",
+                    "--optimizer.early_step_in_backward",
+                ],
+                [
+                    "--training.tensor_parallel_degree=2",
+                    "--experimental.context_parallel_degree=2",
+                    "--training.data_parallel_replicate_degree=2",
                     "--training.enable_cpu_offload",
                     "--optimizer.early_step_in_backward",
                 ],
             ],
-            "Enable CPU Offload with PP",
-            "enable_cpu_offload+PP",
-            ngpu=4,
+            "Enable CPU Offload, Optimizer in backward with TP, DP, CP",
+            "cpu_offload+opt_in_bwd+TP+DP+CP",
+            ngpu=8,
         ),
         OverrideDefinitions(
             [
@@ -415,13 +423,7 @@ def build_test_list():
 
 
 def _run_cmd(cmd):
-    return subprocess.run(
-        [cmd],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        shell=True,
-    )
+    return subprocess.run([cmd], text=True, shell=True)
 
 
 def run_test(test_flavor: OverrideDefinitions, full_path: str, output_dir: str):
