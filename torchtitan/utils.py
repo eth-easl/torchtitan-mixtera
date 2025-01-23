@@ -121,14 +121,6 @@ def set_determinism(
         torch.distributed.tensor._random.manual_seed(seed, spmd_mesh)
 
 def global_barrier():
-    """
-    Sets the timeout for all PGs in the provided mesh, and the default (world) group.
-
-    Note: synchronizes via a barrier, before changing the timeouts. This is important, because
-    otherwise you may face a race where the slow rank has not reached the timeout reduction point
-    yet due to slow operations permitted under the old timeout value, but other faster ranks may
-    start issuing collectives under the new shorter timeout and then immediately timeout.
-    """
     logger.info(f"Doing a global barrier and synchronize")
     torch.distributed.barrier(device_ids=[device_module.current_device()])
     device_module.synchronize()
