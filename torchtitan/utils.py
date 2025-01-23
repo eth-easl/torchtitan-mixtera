@@ -120,6 +120,12 @@ def set_determinism(
     if spmd_mesh and spmd_mesh.get_coordinate() is not None:
         torch.distributed.tensor._random.manual_seed(seed, spmd_mesh)
 
+def global_barrier():
+    logger.info(f"Doing a global barrier and synchronize")
+    torch.distributed.barrier(device_ids=[device_module.current_device()])
+    device_module.synchronize()
+    logger.info(f"Barrier done and synchronized.")
+
 
 def set_pg_timeouts(timeout, world_mesh):
     """

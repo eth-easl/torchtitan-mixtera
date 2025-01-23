@@ -135,10 +135,26 @@ class JobConfig:
             help="Whether to disable color printing in logs",
         )
         self.parser.add_argument(
+            "--metrics.disable_console_log",
+            action="store_true",
+        )
+        self.parser.add_argument(
             "--metrics.save_tb_folder",
             type=str,
             default="tb",
             help="Folder to dump TensorBoard states",
+        )
+        self.parser.add_argument(
+            "--metrics.wandb_project",
+            type=str,
+            default="torchtitan",
+            help="WandB project",
+        )
+        self.parser.add_argument(
+            "--metrics.wandb_run_name",
+            type=str,
+            default="torchtitan_training",
+            help="WandB run name (timing as prefix)",
         )
         # TODO: store_true & default=True make impossible for cmd to set it to False
         self.parser.add_argument(
@@ -417,6 +433,27 @@ class JobConfig:
             action="store_true",
             help="Use deterministic algorithms wherever possible, may be slower",
         )
+        self.parser.add_argument(
+            "--training.dl_worker", type=int, default=0, help="Number of data loader workers to use."
+        )
+        self.parser.add_argument(
+            "--training.dataloader", type=str, default="mixtera", help="Which dataloader to use. Options: huggingface, mixtera"
+        )
+        self.parser.add_argument(
+            "--training.tokenizer", type=str, default="EleutherAI/gpt-neox-20b", help="Which tokenizer to use. If using huggingface and setting this to tiktoken, uses default torchtitan tiktoken tokenizer."
+        )
+        self.parser.add_argument(
+            "--training.add_eos",
+            action="store_true",
+            default=True,
+            help="Whether to add EOS at end of sequence",
+        )
+        self.parser.add_argument(
+            "--training.add_bos",
+            action="store_true",
+            default=True,
+            help="Whether to add BOS at beginning of sequence",
+        )
         # checkpointing configs
         self.parser.add_argument(
             "--checkpoint.enable_checkpoint",
@@ -616,6 +653,40 @@ class JobConfig:
             type=int,
             default=8080,
             help="port of mixtera server",
+        )
+        self.parser.add_argument(
+            "--mixtera.vocab_size",
+            type=int,
+            default=-1,
+            help="vocab size of model",
+        )
+        self.parser.add_argument(
+            "--mixtera.job_id",
+            type=str,
+            default="torchtitan job",
+            help="job name for the server",
+        )
+        self.parser.add_argument(
+            "--mixtera.chunk_size",
+            type=int,
+            default=512,
+            help="chunk size",
+        )
+        self.parser.add_argument(
+            "--mixtera.tunnel_via_server",
+            action="store_true",
+            help="Whether to tunnel the data via the server.",
+        )
+        self.parser.add_argument(
+            "--mixtera.chunk_reading_degree_of_parallelism",
+            type=int,
+            default=1,
+            help="chunk_reading_degree_of_parallelism",
+        )
+        self.parser.add_argument(
+            "--hf.disable_streaming",
+            action="store_true",
+            help="If set, uses the standard MappedHuggingface dataset instead of an iterable one.",
         )
 
     def to_dict(self):

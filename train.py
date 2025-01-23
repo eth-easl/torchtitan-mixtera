@@ -103,19 +103,6 @@ def main(job_config: JobConfig):
     )
     model_name = job_config.model.name
 
-    # build tokenizer
-    # tokenizer_type = model_name_to_tokenizer[model_name]
-    # tokenizer = build_tokenizer(tokenizer_type, job_config.model.tokenizer_path)
-    
-    # Mixtera setup (todo: make this config parameter)
-    client = MixteraClient.from_remote(job_config.mixtera.ip, job_config.mixtera.port)
-    job_id = "torchtitan_test"
-    chunk_size = 512
-    tunnel_via_server = False
-    chunk_reading_degree_of_parallelism = 1
-    num_workers = 4
-    tokenizer = "EleutherAI/gpt-neox-20b"
-
     coordinate = world_mesh.get_coordinate()
     mesh_dim_names = world_mesh.mesh_dim_names
     mesh_sizes = world_mesh.mesh.shape
@@ -168,102 +155,141 @@ def main(job_config: JobConfig):
     assert nodes_per_dp_group == world_size // dp_degree
     assert nodes_per_dp_group == parallel_dims.non_data_parallel_size
     assert nodes_per_dp_group * dp_degree == world_size
-    assert dp_degree_mix == dp_degree # probably not true. for some reason they dont differentiate between shareded and replicated
+    assert dp_degree_mix == dp_degree
 
     logger.info(f"dp_group_id: {dp_group_id}, dp_degree: {dp_degree}, node_id: {node_id}, nodes_per_dp_group: {nodes_per_dp_group}")
-
-    ## "Natural" baseline from ADO paper
-    mixture_pile_static = StaticMixture(chunk_size=chunk_size, mixture={
-        MixtureKey({"pile_set_name": ["FreeLaw"]}): 0.04493927695030662,
-        MixtureKey({"pile_set_name": ["Enron Emails"]}): 0.000998021865918546,
-        MixtureKey({"pile_set_name": ["Github"]}): 0.12267758913758665,
-        MixtureKey({"pile_set_name": ["OpenSubtitles"]}): 0.015835745965429738,
-        MixtureKey({"pile_set_name": ["PubMed Central"]}): 0.12148621531516873,
-        MixtureKey({"pile_set_name": ["OpenWebText2"]}): 0.10960682218906206,
-        MixtureKey({"pile_set_name": ["StackExchange"]}): 0.049107965728456646,
-        MixtureKey({"pile_set_name": ["Pile-CC"]}): 0.1824984780261193,
-        MixtureKey({"pile_set_name": ["ArXiv"]}): 0.08862621733009907,
-        MixtureKey({"pile_set_name": ["USPTO Backgrounds"]}): 0.02616577419097875,
-        MixtureKey({"pile_set_name": ["Books3"]}): 0.10458626728299704,
-        MixtureKey({"pile_set_name": ["Wikipedia (en)"]}): 0.04016661238580172,
-        MixtureKey({"pile_set_name": ["PubMed Abstracts"]}): 0.02212837481440004,
-        MixtureKey({"pile_set_name": ["NIH ExPorter"]}): 0.0018685647881937016,
-        MixtureKey({"pile_set_name": ["BookCorpus2"]}): 0.006327357399975309,
-        MixtureKey({"pile_set_name": ["EuroParl"]}): 0.008072738376112661,
-        MixtureKey({"pile_set_name": ["HackerNews"]}): 0.004731183407655429,
-        MixtureKey({"pile_set_name": ["DM Mathematics"]}): 0.019084626704901235,
-        MixtureKey({"pile_set_name": ["YoutubeSubtitles"]}): 0.004027438721554198,
-        MixtureKey({"pile_set_name": ["PhilPapers"]}): 0.0026731438901686708,
-        MixtureKey({"pile_set_name": ["Ubuntu IRC"]}): 0.004850316881507234,
-        MixtureKey({"pile_set_name": ["Gutenberg (PG-19)"]}): 0.0195412686476066,
-    })
-
-    ## Default pile weights
-    mixture_pile_default = StaticMixture(chunk_size=chunk_size, mixture={
-        MixtureKey({"pile_set_name": ["Pile-CC"]}): 0.1121,
-        MixtureKey({"pile_set_name": ["PubMed Central"]}): 0.1071,
-        MixtureKey({"pile_set_name": ["Books3"]}): 0.0676,
-        MixtureKey({"pile_set_name": ["OpenWebText2"]}): 0.1247,
-        MixtureKey({"pile_set_name": ["ArXiv"]}): 0.1052,
-        MixtureKey({"pile_set_name": ["Github"]}): 0.0427,
-        MixtureKey({"pile_set_name": ["FreeLaw"]}): 0.0386,
-        MixtureKey({"pile_set_name": ["StackExchange"]}): 0.0929,
-        MixtureKey({"pile_set_name": ["USPTO Backgrounds"]}): 0.0420,
-        MixtureKey({"pile_set_name": ["PubMed Abstracts"]}): 0.0845,
-        MixtureKey({"pile_set_name": ["Gutenberg (PG-19)"]}): 0.0199,
-        MixtureKey({"pile_set_name": ["OpenSubtitles"]}): 0.0124,
-        MixtureKey({"pile_set_name": ["Wikipedia (en)"]}): 0.0919,
-        MixtureKey({"pile_set_name": ["DM Mathematics"]}): 0.0198,
-        MixtureKey({"pile_set_name": ["Ubuntu IRC"]}): 0.0074,
-        MixtureKey({"pile_set_name": ["BookCorpus2"]}): 0.0044,
-        MixtureKey({"pile_set_name": ["EuroParl"]}): 0.0043,
-        MixtureKey({"pile_set_name": ["HackerNews"]}): 0.0075,
-        MixtureKey({"pile_set_name": ["YoutubeSubtitles"]}): 0.0042,
-        MixtureKey({"pile_set_name": ["PhilPapers"]}): 0.0027,
-        MixtureKey({"pile_set_name": ["NIH ExPorter"]}): 0.0052,
-        MixtureKey({"pile_set_name": ["Enron Emails"]}): 0.0030,
-    })
-
-    mixture_ado = DynamicMixture(chunk_size=chunk_size, initial_mixture=mixture_pile_static, mixing_alg=AdoDynamicMixing(gamma2=0.1, count_normalizer=1024, use_same_step_size=True, delta_min=0.01, subsampling_interval=10, scaling_law_update_interval=1000, ignore_initial_steps=500, start_step=1000, logging_path="/scratch/mboether/titanado.json",variant="vanilla"))
     
-    # Set this to the mixture you want to use.
-    mixture = mixture_ado 
+    dataloader_str = str(job_config.training.dataloader).lower()
+    if dataloader_str == "mixtera":
+        client = MixteraClient.from_remote(job_config.mixtera.ip, job_config.mixtera.port)
+        job_id = job_config.mixtera.job_id
+        chunk_size = job_config.mixtera.chunk_size
+        tunnel_via_server = job_config.mixtera.tunnel_via_server
+        chunk_reading_degree_of_parallelism = job_config.mixtera.chunk_reading_degree_of_parallelism
+        num_workers = job_config.training.dl_worker
+        tokenizer = job_config.training.tokenizer
+        add_bos = job_config.training.add_bos
+        add_eos = job_config.training.add_eos
 
-    query_execution_args = QueryExecutionArgs(mixture=mixture, dp_groups=dp_degree, nodes_per_group=nodes_per_dp_group, num_workers=num_workers)
-    # Please note that chunk_reading_mixture_type="token" is currently necessary in torchtitan, since we did not implement tokenization outside of Mixtera in torchtitan.
-    # The torchtitan default is to apply BOS tokens. However, since this complicates evaluation (e.g., in the eval harness), we disable this here.
-    streaming_args = ResultStreamingArgs(job_id=job_id, dp_group_id=dp_group_id, node_id=node_id, tunnel_via_server=tunnel_via_server, 
-                                         chunk_reading_degree_of_parallelism=chunk_reading_degree_of_parallelism,
-                                         chunk_reading_mixture_type="token", chunk_reading_tokenizer=tokenizer, chunk_reading_sequence_len=job_config.training.seq_len,
-                                         chunk_reading_token_overlapping=False, chunk_reading_eos=True, chunk_reading_bos=False)
-    
-    query = Query.for_job(job_id).select(None) # TODO: Specify query in config file.
+        if add_bos:
+            logger.info("Adding BOS. Are you sure you want that?")
 
-    return_key_id = isinstance(mixture, DynamicMixture) # not the best criterion to decide this on, but suffices for now.
+        ## "Natural" baseline from ADO paper
+        mixture_pile_static = StaticMixture(chunk_size=chunk_size, mixture={
+            MixtureKey({"pile_set_name": ["FreeLaw"]}): 0.04493927695030662,
+            MixtureKey({"pile_set_name": ["Enron Emails"]}): 0.000998021865918546,
+            MixtureKey({"pile_set_name": ["Github"]}): 0.12267758913758665,
+            MixtureKey({"pile_set_name": ["OpenSubtitles"]}): 0.015835745965429738,
+            MixtureKey({"pile_set_name": ["PubMed Central"]}): 0.12148621531516873,
+            MixtureKey({"pile_set_name": ["OpenWebText2"]}): 0.10960682218906206,
+            MixtureKey({"pile_set_name": ["StackExchange"]}): 0.049107965728456646,
+            MixtureKey({"pile_set_name": ["Pile-CC"]}): 0.1824984780261193,
+            MixtureKey({"pile_set_name": ["ArXiv"]}): 0.08862621733009907,
+            MixtureKey({"pile_set_name": ["USPTO Backgrounds"]}): 0.02616577419097875,
+            MixtureKey({"pile_set_name": ["Books3"]}): 0.10458626728299704,
+            MixtureKey({"pile_set_name": ["Wikipedia (en)"]}): 0.04016661238580172,
+            MixtureKey({"pile_set_name": ["PubMed Abstracts"]}): 0.02212837481440004,
+            MixtureKey({"pile_set_name": ["NIH ExPorter"]}): 0.0018685647881937016,
+            MixtureKey({"pile_set_name": ["BookCorpus2"]}): 0.006327357399975309,
+            MixtureKey({"pile_set_name": ["EuroParl"]}): 0.008072738376112661,
+            MixtureKey({"pile_set_name": ["HackerNews"]}): 0.004731183407655429,
+            MixtureKey({"pile_set_name": ["DM Mathematics"]}): 0.019084626704901235,
+            MixtureKey({"pile_set_name": ["YoutubeSubtitles"]}): 0.004027438721554198,
+            MixtureKey({"pile_set_name": ["PhilPapers"]}): 0.0026731438901686708,
+            MixtureKey({"pile_set_name": ["Ubuntu IRC"]}): 0.004850316881507234,
+            MixtureKey({"pile_set_name": ["Gutenberg (PG-19)"]}): 0.0195412686476066,
+        })
 
-    checkpoints_folder = os.path.join(job_config.job.dump_folder, job_config.checkpoint.folder)
-    mix_step = job_config.checkpoint.load_step
-    if mix_step == -1:
-        mix_step = CheckpointManager._get_max_step(checkpoints_folder)
-    step_folder = os.path.join(checkpoints_folder, f"step-{mix_step}")
-    mixtera_id = os.path.join(step_folder, "mixtera.id")
+        ## Default pile weights
+        mixture_pile_default = StaticMixture(chunk_size=chunk_size, mixture={
+            MixtureKey({"pile_set_name": ["Pile-CC"]}): 0.1121,
+            MixtureKey({"pile_set_name": ["PubMed Central"]}): 0.1071,
+            MixtureKey({"pile_set_name": ["Books3"]}): 0.0676,
+            MixtureKey({"pile_set_name": ["OpenWebText2"]}): 0.1247,
+            MixtureKey({"pile_set_name": ["ArXiv"]}): 0.1052,
+            MixtureKey({"pile_set_name": ["Github"]}): 0.0427,
+            MixtureKey({"pile_set_name": ["FreeLaw"]}): 0.0386,
+            MixtureKey({"pile_set_name": ["StackExchange"]}): 0.0929,
+            MixtureKey({"pile_set_name": ["USPTO Backgrounds"]}): 0.0420,
+            MixtureKey({"pile_set_name": ["PubMed Abstracts"]}): 0.0845,
+            MixtureKey({"pile_set_name": ["Gutenberg (PG-19)"]}): 0.0199,
+            MixtureKey({"pile_set_name": ["OpenSubtitles"]}): 0.0124,
+            MixtureKey({"pile_set_name": ["Wikipedia (en)"]}): 0.0919,
+            MixtureKey({"pile_set_name": ["DM Mathematics"]}): 0.0198,
+            MixtureKey({"pile_set_name": ["Ubuntu IRC"]}): 0.0074,
+            MixtureKey({"pile_set_name": ["BookCorpus2"]}): 0.0044,
+            MixtureKey({"pile_set_name": ["EuroParl"]}): 0.0043,
+            MixtureKey({"pile_set_name": ["HackerNews"]}): 0.0075,
+            MixtureKey({"pile_set_name": ["YoutubeSubtitles"]}): 0.0042,
+            MixtureKey({"pile_set_name": ["PhilPapers"]}): 0.0027,
+            MixtureKey({"pile_set_name": ["NIH ExPorter"]}): 0.0052,
+            MixtureKey({"pile_set_name": ["Enron Emails"]}): 0.0030,
+        })
 
-    if os.path.isdir(step_folder) and not os.path.isfile(mixtera_id):
-        logger.warning(f"Checkpoint directory {step_folder} exists but does not contain mixtera.id file - cannot load Mixtera checkpoint. If you load the model weights but not Mixtera, this may lead to unintended behavior. Please double check whether you are running on a checkpoint created using Mixtera.")
+        mixture_ado = DynamicMixture(chunk_size=chunk_size, initial_mixture=mixture_pile_static, mixing_alg=AdoDynamicMixing(gamma2=0.1, count_normalizer=1024, use_same_step_size=True, delta_min=0.01, subsampling_interval=10, scaling_law_update_interval=1000, ignore_initial_steps=500, start_step=1000, logging_path="/scratch/mboether/titanado.json",variant="vanilla"))
+        
+        # Set this to the mixture you want to use.
+        mixture = mixture_ado 
 
-    should_load_checkpoint = job_config.checkpoint.enable_checkpoint and os.path.isdir(step_folder) and os.path.isfile(mixtera_id)
-    checkpoint_mixtera_path = None if not should_load_checkpoint else pathlib.Path(step_folder)
-    if should_load_checkpoint:
-        logger.info(f"Loading Mixtera checkpoint from {step_folder}")
+        query_execution_args = QueryExecutionArgs(mixture=mixture, dp_groups=dp_degree, nodes_per_group=nodes_per_dp_group, num_workers=num_workers)
+        # Please note that chunk_reading_mixture_type="token" is currently necessary in torchtitan, since we did not implement tokenization outside of Mixtera in torchtitan.
+        # The torchtitan default is to apply BOS tokens. However, since this complicates evaluation (e.g., in the eval harness), we disable this here.
+        streaming_args = ResultStreamingArgs(job_id=job_id, dp_group_id=dp_group_id, node_id=node_id, tunnel_via_server=tunnel_via_server, 
+                                            chunk_reading_degree_of_parallelism=chunk_reading_degree_of_parallelism,
+                                            chunk_reading_mixture_type="token", chunk_reading_tokenizer=tokenizer, chunk_reading_sequence_len=job_config.training.seq_len,
+                                            chunk_reading_token_overlapping=False, chunk_reading_eos=add_eos, chunk_reading_bos=add_bos)
+        
+        query = Query.for_job(job_id).select(None) # TODO: Specify query in config file.
+
+        return_key_id = isinstance(mixture, DynamicMixture) # not the best criterion to decide this on, but suffices for now.
+
+        checkpoints_folder = os.path.join(job_config.job.dump_folder, job_config.checkpoint.folder)
+        mix_step = job_config.checkpoint.load_step
+        if mix_step == -1:
+            mix_step = CheckpointManager._get_max_step(checkpoints_folder)
+        step_folder = os.path.join(checkpoints_folder, f"step-{mix_step}")
+        mixtera_id = os.path.join(step_folder, "mixtera.id")
+
+        if os.path.isdir(step_folder) and not os.path.isfile(mixtera_id):
+            logger.warning(f"Checkpoint directory {step_folder} exists but does not contain mixtera.id file - cannot load Mixtera checkpoint. If you load the model weights but not Mixtera, this may lead to unintended behavior. Please double check whether you are running on a checkpoint created using Mixtera.")
+
+        should_load_checkpoint = job_config.checkpoint.enable_checkpoint and os.path.isdir(step_folder) and os.path.isfile(mixtera_id)
+        checkpoint_mixtera_path = None if not should_load_checkpoint else pathlib.Path(step_folder)
+        if should_load_checkpoint:
+            logger.info(f"Loading Mixtera checkpoint from {step_folder}")
+        else:
+            logger.info("Will not load Mixtera checkpoint but run query from scratch.")
+
+        raw_dataset = MixteraTorchDataset(client, query, query_execution_args, streaming_args, checkpoint_path=checkpoint_mixtera_path, return_key_id=return_key_id)
+
+        # build dataloader
+        data_loader = build_mixtera_data_loader(
+            raw_dataset, job_config.training.batch_size, num_workers, return_key_id
+        )
+        vocab_size = job_config.mixtera.vocab_size
+        if vocab_size < 1:
+            raise RuntimeError(f"You did not provide mixtera.vocab_size!")
+    elif dataloader_str in {"huggingface", "hf"}:
+        tokenizer = build_tokenizer(job_config.training.tokenizer, job_config.model.tokenizer_path)
+        # build dataloader
+        streaming = not job_config.hf.disable_streaming
+        data_loader = build_hf_data_loader(
+            job_config.training.dataset,
+            job_config.training.dataset_path,
+            tokenizer,
+            job_config.training.batch_size,
+            job_config.training.seq_len,
+            dp_degree,
+            dp_rank,
+            job_config.training.dl_worker,
+            streaming,
+            job_config.training.add_bos,
+            job_config.training.add_eos
+        )
+        vocab_size = tokenizer.n_words
     else:
-        logger.info("Will not load Mixtera checkpoint but run query from scratch.")
+        raise RuntimeError(f"Unknown dataloader: {job_config.training.dataloader}")
 
-    raw_dataset = MixteraTorchDataset(client, query, query_execution_args, streaming_args, checkpoint_path=checkpoint_mixtera_path, return_key_id=return_key_id)
-
-    # build dataloader
-    data_loader = build_mixtera_data_loader(
-        raw_dataset, job_config.training.batch_size, num_workers, return_key_id
-    )
 
     # build model (using meta init)
     model_cls = model_name_to_cls[model_name]
@@ -273,7 +299,7 @@ def main(job_config: JobConfig):
     # 2. vocab size from tokenizer
     # 3. max_seq_len base on inputs
     model_config.norm_type = job_config.model.norm_type
-    model_config.vocab_size = 50432 # todo hardcoded right now
+    model_config.vocab_size = vocab_size
     model_config.max_seq_len = job_config.training.seq_len
 
     logger.info(f"Building {model_name} {job_config.model.flavor} with {model_config}")
@@ -411,6 +437,8 @@ def main(job_config: JobConfig):
 
     checkpoint.reset()
 
+    utils.global_barrier() # Global barrier necessary for mixtera to ensure query has been executed.
+
     # train loop
     logger.info(
         f"Training starts at step {train_state.step + 1}, "
@@ -432,6 +460,7 @@ def main(job_config: JobConfig):
             # get batch
             data_load_start = time.perf_counter()
             batch = next(data_iterator)
+
             if len(batch) == 3:
                 input_ids, labels, key_ids = batch
             else:
@@ -445,6 +474,7 @@ def main(job_config: JobConfig):
             input_ids = input_ids.to(device_type)
             labels = labels.to(device_type)
             key_ids = key_ids.to(device_type) if key_ids is not None else key_ids
+
             optimizers.zero_grad()
 
             handle_losses = None
@@ -593,6 +623,9 @@ def main(job_config: JobConfig):
                 tps = ntokens_since_last_log / (
                     time_delta * parallel_dims.non_data_parallel_size
                 )
+
+                global_tps = (ntokens_since_last_log * dp_degree) / time_delta
+
                 # model FLOPS utilization
                 # For its definition and calculation, please refer to the PaLM paper:
                 # https://arxiv.org/abs/2204.02311
@@ -608,6 +641,7 @@ def main(job_config: JobConfig):
                     "loss_metrics/global_avg_loss": global_avg_loss,
                     "loss_metrics/global_max_loss": global_max_loss,
                     "throughput(tps)": tps,
+                    "global_tps": global_tps,
                     "mfu(%)": mfu,
                     "time_metrics/end_to_end(s)": time_end_to_end,
                     "time_metrics/data_loading(s)": time_data_loading,
@@ -621,15 +655,16 @@ def main(job_config: JobConfig):
                 }
                 metric_logger.log(metrics, step=train_state.step)
 
-                logger.info(
-                    f"{color.cyan}step: {train_state.step:2}  "
-                    f"{color.green}loss: {global_avg_loss:7.4f}  "
-                    f"{color.yellow}memory: {device_mem_stats.max_reserved_gib:5.2f}GiB"
-                    f"({device_mem_stats.max_reserved_pct:.2f}%)  "
-                    f"{color.blue}tps: {round(tps):,}  "
-                    f"timings: init_async_time={init_async_time} wait_mixtera_time={wait_mixtera_time} mixtera_feedback_time={mixtera_feedback_time}  "
-                    f"{color.magenta}mfu: {mfu:.2f}%{color.reset}"
-                )
+                if not job_config.metrics.disable_console_log:
+                    logger.info(
+                        f"{color.cyan}step: {train_state.step:2}  "
+                        f"{color.green}loss: {global_avg_loss:7.4f}  "
+                        f"{color.yellow}memory: {device_mem_stats.max_reserved_gib:5.2f}GiB"
+                        f"({device_mem_stats.max_reserved_pct:.2f}%)  "
+                        f"{color.blue}tps: {round(tps):,}  "
+                        f"timings: init_async_time={init_async_time} wait_mixtera_time={wait_mixtera_time} mixtera_feedback_time={mixtera_feedback_time}  "
+                        f"{color.magenta}mfu: {mfu:.2f}%{color.reset}"
+                    )
 
                 losses_since_last_log.clear()
                 ntokens_since_last_log = 0

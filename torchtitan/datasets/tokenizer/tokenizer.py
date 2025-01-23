@@ -13,10 +13,6 @@ from typing import List
 class Tokenizer(ABC):
     # basic tokenizer interface, for typing purpose mainly
     def __init__(self, tokenizer_path: str):
-        assert os.path.exists(
-            tokenizer_path
-        ), f"The tokenizer path does not exist: {tokenizer_path}"
-        assert os.path.isfile(tokenizer_path), tokenizer_path
         self._n_words = 8
 
     @abstractmethod

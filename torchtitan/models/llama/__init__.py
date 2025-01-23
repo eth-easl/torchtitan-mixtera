@@ -43,3 +43,5 @@ llama3_configs = {
     "ado1b": ModelArgs(dim=2048, n_layers=24, n_heads=16, max_seq_len=1024, multiple_of=8, ffn_dim_multiplier=None),
     "doremi500": ModelArgs(dim=1024, n_layers=12, n_heads=16, max_seq_len=1024, ffn_dim_multiplier=8192 / 2730) # enforces hidden dim 8192
 }
+
+llama3_configs["smollm162m"] = llama3_configs["ado"]
