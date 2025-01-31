@@ -1,6 +1,7 @@
 import json
 import os
 from pathlib import Path
+import time
 from typing import Any
 
 import numpy as np
@@ -9,7 +10,9 @@ from torch.utils.data import IterableDataset
 from tqdm import tqdm
 from torchdata.stateful_dataloader import StatefulDataLoader
 from streaming import StreamingDataset
+from torchtitan import utils
 from torchtitan.datasets.tokenizer import Tokenizer
+from filelock import FileLock
 
 from loguru import logger
 
@@ -40,10 +43,18 @@ class MosaicStreamingDataset(IterableDataset):
             local_cache.mkdir()
 
         self.index_file_path = os.path.join(jsonl_directory, 'index.json')
-        if os.path.exists(self.index_file_path):
-            Path(self.index_file_path).unlink()
+        self.index_file_lock_path = os.path.join(jsonl_directory, 'index.json')
 
-        self.create_index_json()
+        lock = FileLock(self.index_file_lock_path)
+        with lock:
+            if os.path.exists(self.index_file_path):
+                last_modified_time = os.path.getmtime(self.index_file_path)
+                current_time = time.time()
+                if current_time - last_modified_time > 300:
+                    os.remove(self.index_file_path)
+
+            if not os.path.exists(self.index_file_path):
+                self.create_index_json()           
 
         self.dataset = StreamingDataset(local=jsonl_directory, remote=None, download_retry=0, batch_size=batch_size, shuffle=shuffle, replication=None)
 
@@ -169,4 +180,6 @@ def build_mosaic_data_loader(
 ):
     logger.info(f"Building a Mosaic data loader with {num_workers} workers, batch size {batch_size}, seq len {seq_len}")
     mosaic_ds = MosaicStreamingDataset(jsonl_directory, tokenizer, batch_size, seq_len, infinite, shuffle, add_bos=add_bos, add_eos=add_eos)
+    logger.info("Global barrier!")
+    utils.global_barrier()
     return DPAwareMosaicDataLoader(mosaic_ds, batch_size=batch_size, num_workers=num_workers)
