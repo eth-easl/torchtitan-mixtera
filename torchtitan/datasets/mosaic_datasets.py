@@ -43,17 +43,24 @@ class MosaicStreamingDataset(IterableDataset):
             local_cache.mkdir()
 
         self.index_file_path = os.path.join(jsonl_directory, 'index.json')
-        self.index_file_lock_path = os.path.join(jsonl_directory, 'index.json')
+        self.index_file_lock_path = os.path.join(jsonl_directory, 'index.json.lock')
 
         lock = FileLock(self.index_file_lock_path)
+        logger.info(f"Acquiring lock at {self.index_file_lock_path}")
         with lock:
+            logger.info("Lock acquired!")
             if os.path.exists(self.index_file_path):
                 last_modified_time = os.path.getmtime(self.index_file_path)
                 current_time = time.time()
+                logger.info(f"Index exists already! index was created at {last_modified_time}, now it is {current_time}")
                 if current_time - last_modified_time > 300:
+                    logger.info("Index is older than 5 minutes, deleting!")
                     os.remove(self.index_file_path)
+                else:
+                    logger.info("Keeping index as it is not outdated.")
 
             if not os.path.exists(self.index_file_path):
+                logger.debug("Creating index.json")
                 self.create_index_json()           
 
         self.dataset = StreamingDataset(local=jsonl_directory, remote=None, download_retry=0, batch_size=batch_size, shuffle=shuffle, replication=None)
