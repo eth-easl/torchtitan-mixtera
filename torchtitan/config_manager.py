@@ -437,7 +437,7 @@ class JobConfig:
             "--training.dl_worker", type=int, default=0, help="Number of data loader workers to use."
         )
         self.parser.add_argument(
-            "--training.dataloader", type=str, default="mixtera", help="Which dataloader to use. Options: huggingface, mixtera"
+            "--training.dataloader", type=str, default="mixtera", help="Which dataloader to use. Options: huggingface, mixtera, mosaic, webdatasets"
         )
         self.parser.add_argument(
             "--training.tokenizer", type=str, default="EleutherAI/gpt-neox-20b", help="Which tokenizer to use. If using huggingface and setting this to tiktoken, uses default torchtitan tiktoken tokenizer."

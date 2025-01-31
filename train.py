@@ -18,6 +18,8 @@ from torchtitan.checkpoint import CheckpointManager, TrainState
 from torchtitan.config_manager import JobConfig
 from torchtitan.datasets import build_hf_data_loader, build_tokenizer
 from torchtitan.datasets.mixtera_datasets import build_mixtera_data_loader
+from torchtitan.datasets.mosaic_datasets import build_mosaic_data_loader
+from torchtitan.datasets.web_datasets import build_web_data_loader
 from torchtitan.float8 import Float8Handler
 from torchtitan.logging import init_logger, logger
 from torchtitan.metrics import build_device_memory_monitor, build_metric_logger
@@ -286,6 +288,16 @@ def main(job_config: JobConfig):
             job_config.training.add_bos,
             job_config.training.add_eos
         )
+        vocab_size = tokenizer.n_words
+    elif dataloader_str in {"mosaic", "mosiac"}:
+        tokenizer = build_tokenizer(job_config.training.tokenizer, job_config.model.tokenizer_path)
+        # Currently not dp-aware.
+        data_loader = build_mosaic_data_loader(job_config.training.dataset_path, tokenizer, job_config.training.batch_size, job_config.training.seq_len, job_config.training.dl_worker, job_config.training.add_bos, job_config.training.add_eos)
+        vocab_size = tokenizer.n_words
+    elif dataloader_str in {"webdatasets", "wds"}:
+        tokenizer = build_tokenizer(job_config.training.tokenizer, job_config.model.tokenizer_path)
+        # Does not support pp/tp natively, splits across _all_ nodes
+        data_loader = build_web_data_loader(job_config.training.dataset_path, tokenizer, job_config.training.batch_size, job_config.training.seq_len, job_config.training.dl_worker, job_config.training.add_bos, job_config.training.add_eos)
         vocab_size = tokenizer.n_words
     else:
         raise RuntimeError(f"Unknown dataloader: {job_config.training.dataloader}")
