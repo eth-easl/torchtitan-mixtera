@@ -35,7 +35,9 @@ def _load_bm_dataset(dataset_path: str, streaming: bool, ext: str):
     return load_dataset(dataset_path, streaming=streaming, data_files=[f"*.{ext}"], split="train")
 
 def _process_bm_text(sample: Dict[str, Any]) -> str:
-    return sample["text"]
+    # works for both json and webdataset
+    res = sample["text"] if "text" in sample else sample["txt"]
+    return res
 
 
 @dataclass
