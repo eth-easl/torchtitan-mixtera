@@ -85,6 +85,11 @@ DATASETS = {
         loader=lambda path, streaming: _load_bm_dataset(path, streaming, "tar"),
         text_processor=_process_bm_text,
     ),
+    "benchmark_webdataset": DatasetConfig(
+        path="/iopsstor/scratch/cscs/mbther/benchmark_data/tar",
+        loader=lambda path, streaming: _load_bm_dataset(path, streaming, "tar"),
+        text_processor=_process_bm_text,
+    ),
 }
 
 
