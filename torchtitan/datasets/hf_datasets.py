@@ -75,6 +75,11 @@ DATASETS = {
         loader=lambda path, streaming: _load_bm_dataset(path, streaming, "jsonl.zst"),
         text_processor=_process_bm_text,
     ),
+    "benchmark_jsonl.zst": DatasetConfig(
+        path="/iopsstor/scratch/cscs/mbther/benchmark_data/jsonl.zst",
+        loader=lambda path, streaming: _load_bm_dataset(path, streaming, "jsonl.zst"),
+        text_processor=_process_bm_text,
+    ),
     "benchmark_webdatasets": DatasetConfig(
         path="/iopsstor/scratch/cscs/mbther/benchmark_data/tar",
         loader=lambda path, streaming: _load_bm_dataset(path, streaming, "tar"),
