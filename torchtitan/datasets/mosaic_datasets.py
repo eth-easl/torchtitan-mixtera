@@ -40,7 +40,7 @@ class MosaicStreamingDataset(IterableDataset):
         self.batch_size = batch_size
 
         if not local_cache.exists():
-            local_cache.mkdir()
+            local_cache.mkdir(exist_ok=True)
 
         self.index_file_path = os.path.join(jsonl_directory, 'index.json')
         self.index_file_lock_path = os.path.join(jsonl_directory, 'index.json.lock')
