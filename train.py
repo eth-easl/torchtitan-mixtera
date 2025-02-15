@@ -4,9 +4,9 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
+from datetime import timedelta
 import os
 import time
-from datetime import timedelta
 
 import torch
 import pathlib
@@ -18,10 +18,9 @@ from torchtitan.checkpoint import CheckpointManager, TrainState
 from torchtitan.config_manager import JobConfig
 from torchtitan.datasets import build_hf_data_loader, build_tokenizer
 from torchtitan.datasets.mixtera_datasets import build_mixtera_data_loader
-from torchtitan.float8 import Float8Handler
 from torchtitan.logging import init_logger, logger
 from torchtitan.metrics import build_device_memory_monitor, build_metric_logger
-from torchtitan.models import model_name_to_tokenizer
+from torchtitan.model_converter import build_model_converters
 from torchtitan.parallelisms import ParallelDims
 from torchtitan.models.llama.model import PerDomainLoss
 from torchtitan.profiling import maybe_enable_memory_snapshot, maybe_enable_profiling
@@ -317,10 +316,9 @@ def main(job_config: JobConfig):
     with torch.device("meta"):
         model = model_cls.from_model_args(model_config)
 
-    # a no-op hander if float8 is not enabled
-    float8_handler = Float8Handler(job_config, parallel_dims)
-    # swap to Float8Linear based on float8 configs
-    float8_handler.convert_to_float8_training(model)
+    # Build the collection of model converters. No-op if `model.converters` empty
+    model_converters = build_model_converters(job_config, parallel_dims)
+    model_converters.convert(model)
 
     # log model size
     model_param_count = utils.get_num_params(model)
@@ -602,9 +600,10 @@ def main(job_config: JobConfig):
 
                 mixtera_feedback_time = time.perf_counter() - mixtera_feedback_start
 
-            # calculate float8 dynamic amax/scale for all-parameter for FSDP2
+            # Post-optimizer model converters hook.
+            # e.g. calculate float8 dynamic amax/scale for all-parameter for FSDP2
             # it issues a single all-reduce for all parameters at once for better performance
-            float8_handler.precompute_float8_dynamic_scale_for_fsdp(model_parts)
+            model_converters.post_optimizer_hook(model_parts)
 
             # log metrics
             if (
