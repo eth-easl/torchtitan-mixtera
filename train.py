@@ -402,6 +402,12 @@ def main(job_config: JobConfig):
     # build optimizer after applying parallelisms to the model
     optimizers = train_spec.build_optimizers_fn(model_parts, job_config)
     lr_schedulers = train_spec.build_lr_schedulers_fn(optimizers, job_config)
+    # Post optimizer step model converters hook.
+    # e.g. calculate float8 dynamic amax/scale for all-parameter for FSDP2
+    # where it issues a single all-reduce for all parameters at once for better performance
+    optimizers.register_step_post_hook(
+        lambda *args, **kwargs: model_converters.post_optimizer_hook(model_parts)
+    )
 
     train_state = TrainState()
 
@@ -599,12 +605,6 @@ def main(job_config: JobConfig):
                 )
 
                 mixtera_feedback_time = time.perf_counter() - mixtera_feedback_start
-
-            # Post-optimizer model converters hook.
-            # e.g. calculate float8 dynamic amax/scale for all-parameter for FSDP2
-            # it issues a single all-reduce for all parameters at once for better performance
-            model_converters.post_optimizer_hook(model_parts)
-
             # log metrics
             if (
                 train_state.step == 1
@@ -653,11 +653,8 @@ def main(job_config: JobConfig):
                     "loss_metrics/global_avg_loss": global_avg_loss,
                     "loss_metrics/global_max_loss": global_max_loss,
                     "throughput(tps)": tps,
-<<<<<<< HEAD
                     "global_tps": global_tps,
-=======
                     "tflops": tflops,
->>>>>>> 4e32663 (Add tflops to metrics (#847))
                     "mfu(%)": mfu,
                     "time_metrics/end_to_end(s)": time_end_to_end,
                     "time_metrics/data_loading(s)": time_data_loading,
