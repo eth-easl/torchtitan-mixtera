@@ -1,8 +1,8 @@
 # torchtitan Config.toml
 
 [job]
-dump_folder = "/iopsstor/scratch/cscs/mbther/ado/torchtitan-dumps"
-description = "ado torchtitan"
+dump_folder = "/capstor/store/cscs/swissai/a09/mixtera/ado_162m_trainings/torchtitan-dumps-ado-seqfix"
+description = "ado 162m torchtitan seqfix"
 
 [profiling]
 enable_profiling = false
@@ -18,11 +18,11 @@ enable_tensorboard = false
 save_tb_folder = "tb"
 enable_wandb = true
 wandb_project = "ado_experiments"
-wandb_run_name = "ado 1b default mixture"
+wandb_run_name = "ado 162m the pile ado mixture seqfix"
 
 [model]
 name = "llama3"
-flavor = "ado1b"
+flavor = "smollm162m"
 norm_type = "rmsnorm"  # layernorm / np_layernorm / rmsnorm / fused_rmsnorm
 tokenizer_path = ""
 
@@ -32,12 +32,12 @@ lr = 0.001
 fused = true
 
 [training]
-batch_size = 32
+batch_size = 64
 seq_len = 2048
 warmup_steps = 500
 max_norm = 1.0  # grad norm clipping
 steps = 30000 # 30k steps because ADO paper uses 1024 context length
-data_parallel_replicate_degree = 2
+data_parallel_replicate_degree = 16
 data_parallel_shard_degree = -1 # ?? not sure.
 tensor_parallel_degree = 1
 compile = true # try=
@@ -71,13 +71,13 @@ selective_ac_option = '2'  # 'int' = ac every positive int layer or 'op', ac bas
 enable_float8_linear = false
 
 [comm]
-init_timeout_seconds = 600
-train_timeout_seconds = 600 # very high timeout for mixtera ops, temp solution, should parallelize some things e.g. fitting of scaling laws
+init_timeout_seconds = 3600
+train_timeout_seconds = 3600 # very high timeout for mixtera ops, temp solution, should parallelize some things e.g. fitting of scaling laws
 
 [mixtera]
 vocab_size = 50432
-job_id = "ado_torchtitan_run1"
+job_id = "ado_torchtitan_adomix_162m_seqfi"
 chunk_size = 512
 tunnel_via_server = false
 chunk_reading_degree_of_parallelism = 1
-pile = "default"
+pile = "ado"
