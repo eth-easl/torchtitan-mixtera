@@ -175,7 +175,7 @@ def main(job_config: JobConfig):
             logger.info("Adding BOS. Are you sure you want that?")
 
         ## "Natural" baseline from ADO paper
-        mixture_pile_static = StaticMixture(chunk_size=chunk_size, mixture={
+        mixture_pile_static = StaticMixture(chunk_size=chunk_size, strict=False, mixture={
             MixtureKey({"pile_set_name": ["FreeLaw"]}): 0.04493927695030662,
             MixtureKey({"pile_set_name": ["Enron Emails"]}): 0.000998021865918546,
             MixtureKey({"pile_set_name": ["Github"]}): 0.12267758913758665,
@@ -201,7 +201,7 @@ def main(job_config: JobConfig):
         })
 
         ## Default pile weights
-        mixture_pile_default = StaticMixture(chunk_size=chunk_size, mixture={
+        mixture_pile_default = StaticMixture(chunk_size=chunk_size, strict=False, mixture={
             MixtureKey({"pile_set_name": ["Pile-CC"]}): 0.1121,
             MixtureKey({"pile_set_name": ["PubMed Central"]}): 0.1071,
             MixtureKey({"pile_set_name": ["Books3"]}): 0.0676,
@@ -226,7 +226,7 @@ def main(job_config: JobConfig):
             MixtureKey({"pile_set_name": ["Enron Emails"]}): 0.0030,
         })
 
-        mixture_ado = DynamicMixture(chunk_size=chunk_size, initial_mixture=mixture_pile_static, mixing_alg=AdoDynamicMixing(gamma2=0.1, count_normalizer=1024, use_same_step_size=True, delta_min=0.01, subsampling_interval=10, scaling_law_update_interval=1000, ignore_initial_steps=500, start_step=1000, logging_path="/iopsstor/scratch/cscs/mbther/ado.json",variant="vanilla"))
+        mixture_ado = DynamicMixture(strict=False, chunk_size=chunk_size, initial_mixture=mixture_pile_static, mixing_alg=AdoDynamicMixing(gamma2=0.1, count_normalizer=job_config.training.seq_len, use_same_step_size=True, delta_min=0.01, subsampling_interval=10, scaling_law_update_interval=1000, ignore_initial_steps=500, start_step=1000, logging_path=f"/capstor/store/cscs/swissai/a09/mixtera/adologs/{job_id}_seqfix.json", variant="vanilla"))
         
         # Set this to the mixture you want to use.
         if job_config.mixtera.pile == "ado":
