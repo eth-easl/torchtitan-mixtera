@@ -1,7 +1,7 @@
 # torchtitan Config.toml
 
 [job]
-dump_folder = "/pub/nfs-data/mboether/ado_1b_titan"
+dump_folder = "/iopsstor/scratch/cscs/mbther/ado/torchtitan-dumps"
 description = "ado torchtitan"
 
 [profiling]
@@ -18,7 +18,7 @@ enable_tensorboard = false
 save_tb_folder = "tb"
 enable_wandb = true
 wandb_project = "ado_experiments"
-wandb_run_name = "ado 1b"
+wandb_run_name = "ado 1b default mixture"
 
 [model]
 name = "llama3"
@@ -80,4 +80,4 @@ job_id = "ado_torchtitan_run1"
 chunk_size = 512
 tunnel_via_server = false
 chunk_reading_degree_of_parallelism = 1
-pile = "ado"
+pile = "default"
