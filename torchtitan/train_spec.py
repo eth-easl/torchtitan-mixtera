@@ -10,12 +10,14 @@
 from dataclasses import dataclass
 from typing import Callable, Dict, Protocol, Type, TypeAlias
 
+import torch
 import torch.nn as nn
 from torch.distributed.pipelining.schedules import _PipelineSchedule
 
 from torchtitan.config_manager import JobConfig
 from torchtitan.optimizer import LRSchedulersContainer, OptimizersContainer
-
+from torchtitan.dataloader import DataLoaderBuilder
+from torchtitan.datasets.tokenizer import Tokenizer
 
 @dataclass
 class BaseModelArgs:
@@ -47,6 +49,7 @@ OptimizerBuilderWrapper: TypeAlias = Callable[
     [list[nn.Module], JobConfig, OptimizersContainer], OptimizersContainer
 ]
 LRSchedulersBuilder: TypeAlias = Callable[[OptimizersContainer], LRSchedulersContainer]
+LossFunction: TypeAlias = Callable[[torch.Tensor, torch.Tensor], torch.Tensor]
 
 
 @dataclass
@@ -60,8 +63,9 @@ class TrainSpec:
     ]
     build_optimizers_fn: OptimizersBuilder
     build_lr_schedulers_fn: LRSchedulersBuilder
-
-    # TODO: Add a ``build_dataloader_fn``
+    build_dataloader_fn: DataLoaderBuilder
+    tokenizer_cls: Type[Tokenizer]
+    loss_fn: LossFunction
 
     # TODO: Add a FQN convert fn to allow users to load checkpoints from
     # HuggingFace or other sources that have different FQN conventions.
