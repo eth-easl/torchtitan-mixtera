@@ -16,8 +16,8 @@ from torch.distributed.checkpoint.stateful import Stateful
 from torch.utils.data import IterableDataset
 from torchdata.stateful_dataloader import StatefulDataLoader
 
-from torchtitan.datasets.tokenizer import Tokenizer
-from torchtitan.logging import logger
+from torchtitan.components.tokenizer import Tokenizer
+from torchtitan.tools.logging import logger
 
 
 def _load_c4_dataset(dataset_path: str, streaming: bool):
