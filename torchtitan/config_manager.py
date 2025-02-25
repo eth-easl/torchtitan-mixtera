@@ -5,6 +5,7 @@
 # LICENSE file in the root directory of this source tree.
 
 import argparse
+import os
 import sys
 from collections import defaultdict
 from typing import Tuple, Union
@@ -209,7 +210,7 @@ class JobConfig:
         self.parser.add_argument(
             "--model.tokenizer_path",
             type=str,
-            default="./torchtitan/datasets/tokenizer/tokenizer.model",
+            default="./assets/tokenizer/original/tokenizer.model",
             help="Tokenizer path",
         )
         self.parser.add_argument(

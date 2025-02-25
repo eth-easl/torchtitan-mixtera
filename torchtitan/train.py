@@ -13,7 +13,7 @@ import pathlib
 
 from torch.distributed.elastic.multiprocessing.errors import record
 
-from torchtitan.checkpoint import CheckpointManager, TrainState
+from torchtitan.components.checkpoint import CheckpointManager, TrainState
 from torchtitan.config_manager import JobConfig
 from torchtitan.datasets import build_hf_data_loader, build_tokenizer
 from torchtitan.datasets.mixtera_datasets import build_mixtera_data_loader
@@ -47,7 +47,6 @@ os.environ["NCCL_TIMEOUT"] = str(30 * 60 * 1000)
 # Enable debug tracing on failure: https://pytorch.org/docs/stable/elastic/errors.html
 @record
 def main(job_config: JobConfig):
-    init_logger()
     logger.info(f"Starting job: {job_config.job.description}")
 
     if job_config.experimental.custom_model_path:
@@ -715,6 +714,7 @@ def main(job_config: JobConfig):
 
 
 if __name__ == "__main__":
+    init_logger()
     config = JobConfig()
     config.parse_args()
     main(config)
