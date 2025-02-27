@@ -57,7 +57,6 @@ enable_async_tensor_parallel = false
 [checkpoint]
 enable_checkpoint = true
 folder = "checkpoint"
-interval_type = "steps"
 interval = 2500
 model_weights_only = false
 export_dtype = "float32"
