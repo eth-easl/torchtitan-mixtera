@@ -106,10 +106,7 @@ def test_generate(
     logger.info(f"World Size: {world_size}, Local Rank: {local_rank} on {device}")
 
     # Tokenizer setup
-    tokenizer = build_tokenizer(
-        model_name_to_tokenizer[train_spec.name], config.model.tokenizer_path
-    )
-
+    tokenizer = train_spec.build_tokenizer_fn(config)
     model_config = train_spec.config[config.model.flavor]
     model_config.norm_type = config.model.norm_type
     model_config.max_seq_len = config.training.seq_len
