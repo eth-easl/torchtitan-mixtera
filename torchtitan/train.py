@@ -5,6 +5,7 @@
 # LICENSE file in the root directory of this source tree.
 
 from datetime import timedelta
+import importlib
 import os
 import time
 
@@ -83,8 +84,8 @@ class Trainer(torch.distributed.checkpoint.stateful.Stateful):
 
         logger.info(f"Starting job: {job_config.job.description}")
 
-        if job_config.experimental.custom_model_path:
-            utils.import_module_from_path(job_config.experimental.custom_model_path)
+        if job_config.experimental.custom_import:
+            importlib.import_module(job_config.experimental.custom_import)
 
         if job_config.job.print_args:
             logger.info(f"Running with args: {job_config.to_dict()}")
