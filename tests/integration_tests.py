@@ -97,16 +97,6 @@ def build_test_list():
         OverrideDefinitions(
             [
                 [
-                    "--training.tensor_parallel_degree 2",
-                    "--model.norm_type=fused_rmsnorm",
-                ],
-            ],
-            "2D eager with fused_rmsnorm",
-            "2d_eager_fused_rmsnorm",
-        ),
-        OverrideDefinitions(
-            [
-                [
                     "--checkpoint.enable_checkpoint",
                 ],
                 [
@@ -148,6 +138,18 @@ def build_test_list():
             "PP looped zero bubble test",
             "pp_looped_zero_bubble",
             ngpu=4,
+        ),
+        OverrideDefinitions(
+            [
+                [
+                    "--experimental.pipeline_parallel_degree 2",
+                    "--experimental.pipeline_parallel_schedule ZBVZeroBubble",
+                    "--experimental.pipeline_parallel_microbatches 8",
+                ],
+            ],
+            "PP zero bubble test (v shaped)",
+            "pp_zbv",
+            ngpu=2,
         ),
         OverrideDefinitions(
             [
@@ -417,6 +419,34 @@ def build_test_list():
             "Generation script test",
             "test_generate",
             ngpu=2,
+        ),
+        OverrideDefinitions(
+            [
+                [
+                    "--training.fsdp_reshard_after_forward always",
+                ],
+            ],
+            "Test always resharding after forward pass",
+            "fsdp_reshard_always",
+            ngpu=2,
+        ),
+        OverrideDefinitions(
+            [
+                [
+                    "--checkpoint.enable_checkpoint",
+                    "--training.steps 10",
+                ],
+                # Save at [dp:4] and load at [dp:2, tp:2]. Note that the dataloader should be
+                # excluded during loading to avoid errors caused by mismatched dp_degree.
+                [
+                    "--checkpoint.enable_checkpoint",
+                    "--checkpoint.exclude_from_loading lr_scheduler,dataloader,optimizer",
+                    "--training.tensor_parallel_degree 2",
+                    "--training.steps 20",
+                ],
+            ],
+            "Optional checkpoint",
+            "optional_checkpoint",
         ),
     ]
     return integration_tests_flavors
