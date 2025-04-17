@@ -5,7 +5,7 @@ An example script for converting the original Llama3 checkpoints into the expect
 
 The script expects a path to the original checkpoint files, and a path to an output directory:
 ```bash
-python3 scripts/convert_llama_to_dcp.py <input_dir> <output_dir>
+python -m scripts.convert_llama_to_dcp <input_dir> <output_dir>
 ```
 
 
@@ -82,5 +82,5 @@ A seed checkpoint does initialization of the model on a single CPU, and can be l
 To create a seed checkpoint, use the same model config as you use for training.
 e.g.
 ```bash
-NGPU=1 CONFIG=<path_to_model_config> ./run_train.sh --checkpoint.enable_checkpoint --checkpoint.create_seed_checkpoint --training.data_parallel_replicate_degree 1 --training.data_parallel_shard_degree 1 --training.tensor_parallel_degree 1 --experimental.pipeline_parallel_degree 1 --experimental.context_parallel_degree 1
+NGPU=1 CONFIG=<path_to_model_config> ./run_train.sh --checkpoint.enable_checkpoint --checkpoint.create_seed_checkpoint --parallelism.data_parallel_replicate_degree 1 --parallelism.data_parallel_shard_degree 1 --parallelism.tensor_parallel_degree 1 --parallelism.pipeline_parallel_degree 1 --parallelism.context_parallel_degree 1
 ```

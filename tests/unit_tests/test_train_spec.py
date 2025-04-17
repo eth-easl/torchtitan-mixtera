@@ -9,13 +9,13 @@ from functools import partial
 import pytest
 import torch
 import torch.nn as nn
-from torchtitan.components.loss import cross_entropy_loss
+from torchtitan.components.loss import build_cross_entropy_loss
 from torchtitan.components.lr_scheduler import build_lr_schedulers
 from torchtitan.components.optimizer import build_optimizers, OptimizersContainer
 from torchtitan.config_manager import JobConfig
 from torchtitan.datasets.hf_datasets import build_hf_dataloader
 from torchtitan.datasets.tokenizer.tiktoken import build_tiktoken_tokenizer
-from torchtitan.models.llama import parallelize_llama, pipeline_llama
+from torchtitan.models.llama3 import parallelize_llama, pipeline_llama
 from torchtitan.protocols.train_spec import (
     apply_to_train_specs,
     BaseModelArgs,
@@ -62,7 +62,7 @@ class TestTrainSpec:
             build_lr_schedulers_fn=build_lr_schedulers,
             build_dataloader_fn=build_hf_dataloader,
             build_tokenizer_fn=build_tiktoken_tokenizer,
-            loss_fn=cross_entropy_loss,
+            build_loss_fn=build_cross_entropy_loss,
         )
         register_train_spec(spec)
         new_spec = get_train_spec("fake")
@@ -83,7 +83,7 @@ class TestTrainSpec:
             build_lr_schedulers_fn=build_lr_schedulers,
             build_dataloader_fn=build_hf_dataloader,
             build_tokenizer_fn=build_tiktoken_tokenizer,
-            loss_fn=cross_entropy_loss,
+            build_loss_fn=build_cross_entropy_loss,
         )
         register_train_spec(spec)
         new_spec = get_train_spec("fake2")

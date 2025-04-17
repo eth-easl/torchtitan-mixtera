@@ -194,7 +194,7 @@ class JobConfig:
         self.parser.add_argument(
             "--model.name",
             type=str,
-            default="llama",
+            default="llama3",
             help="Which model to train",
         )
         self.parser.add_argument(
@@ -507,6 +507,16 @@ class JobConfig:
                 but currently the split points must be specified manually.""",
         )
         self.parser.add_argument(
+            "--parallelism.pipeline_parallel_layers_per_stage",
+            type=int,
+            default=None,
+            help="""
+                The number of layers per (virtual) pipeline stage. If specified, the split points will be
+                calculated from the number of layers and pipeline_parallel_degree. If not specified, the
+                layers per stage will be inferred from the model, schedule, and pipeline_parallel_degree.
+                """,
+        )
+        self.parser.add_argument(
             "--parallelism.pipeline_parallel_schedule",
             type=str,
             default="1F1B",
@@ -530,15 +540,16 @@ class JobConfig:
             """,
         )
         self.parser.add_argument(
-            "--parallelism.pipeline_parallel_microbatches",
+            "--parallelism.pipeline_parallel_microbatch_size",
             type=int,
-            default=None,
+            default=1,
             help="""
-                How many microbatches to split the global training batch into when using pipeline parallelism.
+                The size of each pipeline parallel microbatch (default 1).
 
-                The global training batch size must be evenly divisible by the number of microbatches.
+                This value is used to compute the total number of microbatches by dividing batch_size with
+                pipeline_parallel_microbatch_size.
 
-                The default value will be the number of pipeline stages, if unspecified.
+                The global training batch size must be evenly divisible by pipeline_parallel_microbatch_size.
             """,
         )
         self.parser.add_argument(
@@ -710,6 +721,17 @@ class JobConfig:
             help="""
             If specified, creates float8 config from recipe name, valid choices are
             `tensorwise`, `rowwise` and `rowwise_with_gw_hp`.
+            """,
+        )
+        self.parser.add_argument(
+            "--float8.filter_fqns",
+            type=string_list,
+            default=[],
+            nargs="+",
+            help="""
+            Comma-separated list of fully qualified names of modules to skip applying float8 training to.
+            nn.Linear modules with any dim size not divisible by 16 are always skipped due to hardware requirements.
+            Example: --float8.module_filter_fqns "attention.wq,attention.wk,attention.wv,output"
             """,
         )
 

@@ -29,8 +29,6 @@
 import math
 from typing import Optional, Tuple
 
-import numpy as np
-
 import torch
 import torch.distributed as dist
 
@@ -40,9 +38,15 @@ import torch.utils.checkpoint
 
 from attn_mask_utils import _prepare_4d_causal_attention_mask
 from model_config import ModelArgs
-from symm_mem_recipes import on_device_all_to_all_v
+from symm_mem_recipes import OnDeviceAllToAllV
 from torch import nn
+from torch.distributed._functional_collectives import all_to_all_single_autograd
 
+from torchtitan.experiments.kernels.moe.indices import generate_permute_indices
+from torchtitan.experiments.kernels.triton_mg_group_gemm.torchao_pr import (
+    ALIGN_SIZE_M,
+    grouped_gemm_forward,
+)
 
 # Get model parallel subgroup by name:
 # e.g. "pp", "ep", None
@@ -83,7 +87,6 @@ class RotaryEmbedding(nn.Module):
             device=self.inv_freq.device,
             dtype=torch.get_default_dtype(),
         )
-        self.max_seq_len_cached = None
 
     def _set_cos_sin_cache(self, seq_len, device, dtype):
         self.max_seq_len_cached = seq_len
@@ -324,6 +327,8 @@ def apply_rotary_pos_emb(q, k, cos, sin, position_ids, unsqueeze_dim=1):
 
 
 class MLP(nn.Module):
+    act_fn = nn.SiLU()
+
     def __init__(self, config, hidden_size=None, intermediate_size=None):
         super().__init__()
         self.config = config
@@ -335,7 +340,6 @@ class MLP(nn.Module):
         self.gate_proj = nn.Linear(self.hidden_size, self.intermediate_size, bias=False)
         self.up_proj = nn.Linear(self.hidden_size, self.intermediate_size, bias=False)
         self.down_proj = nn.Linear(self.intermediate_size, self.hidden_size, bias=False)
-        self.act_fn = nn.SiLU()
 
     def forward(self, x):
         down_proj = self.down_proj(self.act_fn(self.gate_proj(x)) * self.up_proj(x))
@@ -445,11 +449,16 @@ class MoE(nn.Module):
     """
 
     # Class attributes:
+    # Two shuffle method supported:
+    # 1. "torch_all_to_all"
+    # 2. "symm_mem" (see `setup_symm_mem` below)
+    shuffle_method = "torch_all_to_all"
+    # Group GEMM method, "torch" or "torchao"
+    group_mm = "torch"
+
     # Symmetric memory buffers shared by all MoE instances across layers
     token_send_buf: Optional[torch.Tensor] = None
     token_gather_buf: Optional[torch.Tensor] = None
-    input_splits: Optional[torch.Tensor] = None
-    output_splits: Optional[torch.Tensor] = None
 
     def __init__(self, config):
         super().__init__()
@@ -482,13 +491,45 @@ class MoE(nn.Module):
             self.shared_experts = MLP(
                 config=config, intermediate_size=intermediate_size
             )
-        # `config.dtype` is a string, e.g., "bfloat16"
-        dtype = getattr(torch, config.dtype)
-        self.setup_symm_mem(dtype, self.gate.weight.device)
 
-    def setup_symm_mem(self, dtype, device):
+    def combine_experts(self, submod_name: str):
+        all_weights = []
+        for expert in self.experts.values():
+            lin = expert.get_submodule(submod_name)
+            all_weights.append(lin.weight)
+            lin.weight = None
+
+        if self.group_mm == "torch":
+            combined_weight = torch.stack(all_weights)
+        elif self.group_mm == "torchao":
+            combined_weight = torch.cat(all_weights)
+        else:
+            raise RuntimeError(f"Unknown Group GEMM method: {self.group_mm}")
+
+        self.register_parameter(f"{submod_name}_weight", nn.Parameter(combined_weight))
+
+    # This function is used to create a symm mem buffer for MoE's. It is for
+    # shuffling tokens fully "on-device", as compared to traditional torch
+    # all_to_all APIs which requrie a GPU-to-CPU sync of the splits.  If a user
+    # calls this function, the `shuffle_method` would switch from
+    # `torch_all_to_all` to `symm_mem`.
+    def setup_symm_mem(self, dtype: torch.dtype, device: torch.device):
+        # Switch shuffle method
+        self.shuffle_method = "symm_mem"
+
+        # Combine expert weights
+        self.combine_experts("gate_proj")
+        self.combine_experts("up_proj")
+        self.combine_experts("down_proj")
+
+        # Assuming worst case, 2x tokens are routed to one EP rank
+        overflow = 2
+        OnDeviceAllToAllV.max_output_len = (
+            self.config.max_seq_len * self.num_experts_per_tok * overflow
+        )
+
         # Symmetric memory buffers are shared by all MoE instances across
-        # layers, so we only need to initialize them once
+        # layers, we only need to initialize them once
         if MoE.token_send_buf is not None:
             return
 
@@ -500,23 +541,34 @@ class MoE(nn.Module):
             dtype=dtype,
             device=device,
         )
-        # Number of tokens to send to EP peers, aka. input splits
-        MoE.input_splits = symm_mem.empty(
-            self.ep_size, dtype=torch.int64, device=device
-        )
-        # Number of tokens to receive from EP peers, aka. output splits
-        MoE.output_splits = symm_mem.empty(
-            self.ep_size, dtype=torch.int64, device=device
-        )
         # Input buffer for EP-to-DP shuffle
         MoE.token_gather_buf = symm_mem.empty(
-            # worst case, all tokens are routed to one EP rank
-            MoE.token_send_buf.shape[0] * self.ep_size,
+            self.config.max_seq_len
+            * self.num_experts_per_tok  # seq len * top k (flattened)
+            * overflow,
             self.config.hidden_size,  # hidden dim
             dtype=dtype,
             device=device,
         )
         print(f"EP rank [{self.ep_rank}]: Created Symmetric Memory for MoE")
+        print("Combining expert weights for Group GEMM")
+
+    def get_send_buf(self):
+        # [Why detach?] During a first forward-backward step, the buffer would
+        # be included in a computational graph. In a second step, autograd will
+        # return an error saying "Trying to backward through the graph a second
+        # time (or directly access saved tensors more than once)". This is
+        # because the buffer is still in the graph, and autograd is trying to
+        # backward through the graph a second time. To avoid this, we detach the
+        # buffer from the graph. `detach()` returns a new tensor, which shares
+        # the same storage with the original one.
+        self.token_send_buf.grad = None
+        return self.token_send_buf.detach()
+
+    def get_gather_buf(self):
+        # See [Why detach?] in `get_send_buf`
+        self.token_gather_buf.grad = None
+        return self.token_gather_buf.detach()
 
     def forward(self, hidden_states):
         identity = hidden_states
@@ -524,7 +576,12 @@ class MoE(nn.Module):
         # for each token, select top-k experts, and compute the weight for each expert
         topk_idx, topk_weight = self.gate(hidden_states)
         hidden_states = hidden_states.view(-1, hidden_states.shape[-1])
-        y = self.moe_forward(hidden_states, topk_idx, topk_weight).view(*orig_shape)
+        if self.shuffle_method == "symm_mem":
+            y = self.moe_on_device(hidden_states, topk_idx, topk_weight)
+        else:  # "torch_all_to_all"
+            y = self.moe_forward(hidden_states, topk_idx, topk_weight)
+
+        y = y.view(*orig_shape)
         if self.config.n_shared_experts is not None:
             y = y + self.shared_experts(identity)
         return y
@@ -544,12 +601,7 @@ class MoE(nn.Module):
             idxs = topk_ids.view(-1).argsort()
             sorted_tokens_shape = idxs.shape + x.shape[1:]
 
-        # Take necessary space from the `token_send_buf` symm mem
-        sorted_tokens = MoE.token_send_buf[: idxs.shape[0]]
-        sorted_tokens.copy_(x[idxs // topk_ids.shape[1]])
-        # TODO: I tried to use `out=` to avoid copy, but it is not
-        # differentiable
-        # torch.index_select(x, 0, idxs // topk_ids.shape[1], out=sorted_tokens)
+        sorted_tokens = x[idxs // topk_ids.shape[1]]
         assert sorted_tokens.shape == sorted_tokens_shape
 
         # This part exchange the information about the number of tokens send and
@@ -559,91 +611,220 @@ class MoE(nn.Module):
         with torch.no_grad():
             # Sum the tokens over local experts, then we get tokens per EP rank,
             # which is the input splits
-            torch.sum(
-                tokens_per_expert.view(self.ep_size, -1), dim=1, out=MoE.input_splits
-            )
             tokens_per_expert_group = tokens_per_expert.new_empty(
                 tokens_per_expert.shape[0]
             )
             dist.all_to_all_single(
                 tokens_per_expert_group, tokens_per_expert, group=self.ep_group
             )
+            input_splits = tokens_per_expert.view(self.ep_size, -1).sum(dim=1)
 
         # DP to EP token shuffle. This part needs gradient.
-        on_device_all_to_all_v(
-            MoE.token_gather_buf,
-            MoE.output_splits,
-            sorted_tokens,
-            MoE.input_splits,
-            self.ep_group,
-        )
-
-        with torch.no_grad():
-            # Output splits sanity check
-            # expected_splits = tokens_per_expert_group.view(self.ep_size, -1).sum(dim=1)
-            # torch.testing.assert_close(MoE.output_splits, expected_splits)
-            # Received tokens from all other ranks. TODO: use mask instead
-            received = MoE.output_splits.sum()
-
-        # TODO: don't use `received`
-        gathered_tokens = MoE.token_gather_buf[:received]
+        if self.shuffle_method == "symm_mem":
+            # Move input to the `token_send_buf` symm mem
+            token_send_buf = self.get_send_buf()
+            token_send_buf[: idxs.shape[0]].copy_(sorted_tokens)
+            # Note: `out=` avoids copy, but it is not differentiable
+            # torch.index_select(x, 0, idxs // topk_ids.shape[1], out=self.token_send_buf[: idxs.shape[0]])
+            token_gather_buf, output_splits = OnDeviceAllToAllV.apply(
+                token_send_buf,
+                input_splits,
+                self.ep_group,
+            )
+            with torch.no_grad():
+                # Received tokens from all other ranks. TODO: use mask instead
+                received = output_splits.sum()
+            # TODO: don't use `received`
+            gathered_tokens = token_gather_buf[:received]
+        else:  # "torch_all_to_all"
+            # Prepare input ans output splits
+            with torch.no_grad():
+                output_splits = tokens_per_expert_group.view(self.ep_size, -1).sum(
+                    dim=1
+                )
+            gathered_tokens = all_to_all_single_autograd(
+                sorted_tokens,
+                output_splits.tolist(),
+                input_splits.tolist(),
+                self.ep_group,
+            )
 
         # This part prepares a 1D tensor with the same length as
         # `gathered_tokens`. The 1D tensor is filled with local expert IDs which
         # the tokens in `gathered_tokens` are headed for. This part doesn't need
         # gradient.
         with torch.no_grad():
-            gatherd_idxs = np.zeros(shape=(gathered_tokens.shape[0],), dtype=np.int32)
-            s = 0
-            # TODO: remove `tolist()`
-            for i, k in enumerate(tokens_per_expert_group.tolist()):
-                gatherd_idxs[s : s + k] = i % self.experts_per_rank
-                s += k
+            gatherd_idxs = (
+                torch.arange(
+                    tokens_per_expert_group.numel(),
+                    device=tokens_per_expert_group.device,
+                )
+                % self.experts_per_rank
+            )
+            gatherd_idxs = gatherd_idxs.repeat_interleave(tokens_per_expert_group)
 
-        # Take necessary space from `token_send_buf` symm mem because we are
-        # going to send them out after expert processing
-        processed_tokens = MoE.token_send_buf[:received]
+        # Prepare buffer for tokens processed by experts
+        if self.shuffle_method == "symm_mem":
+            # Take necessary space from `token_gather_buf` symm mem because we are
+            # going to send them out after expert processing
+            processed_tokens = self.get_gather_buf()[: gathered_tokens.shape[0]]
+        else:  # "torch_all_to_all"
+            processed_tokens = torch.empty_like(gathered_tokens)
+
+        # This part processes the tokens routed to the local experts.
+        # TODO: can we use group GEMM here?
         for i, expert in enumerate(self.experts.values()):
             processed_tokens[gatherd_idxs == i] = expert(
                 gathered_tokens[gatherd_idxs == i]
             )
 
-        # Take necessary space from `token_gather_buf` symm mem to receive processed tokens
-        gathered_tokens = MoE.token_gather_buf[: sorted_tokens_shape[0]]
-        received_splits = torch.empty_like(MoE.output_splits)  # unused
-        # EP to DP token shuffle
-        on_device_all_to_all_v(
-            gathered_tokens,
-            received_splits,  # unused
-            processed_tokens,
-            MoE.output_splits,
-            self.ep_group,
-        )
+        # Now shuffle the tokens back to their original owner, i.e. EP to DP shuffle.
+        # The input/output splits are just a reverse of the previous shuffle.
+        if self.shuffle_method == "symm_mem":
+            token_return_buf, _ = OnDeviceAllToAllV.apply(
+                processed_tokens,
+                output_splits,
+                self.ep_group,
+            )
+            returned_tokens = token_return_buf[: sorted_tokens_shape[0]]
+        else:  # "torch_all_to_all"
+            returned_tokens = all_to_all_single_autograd(
+                processed_tokens,
+                input_splits.tolist(),
+                output_splits.tolist(),
+                self.ep_group,
+            )
 
-        returned_tokens = torch.empty_like(gathered_tokens)
-        returned_tokens[idxs] = gathered_tokens
+        output_tokens = torch.empty_like(returned_tokens)
+        output_tokens[idxs] = returned_tokens
         final_out = (
-            returned_tokens.view(*topk_ids.shape, -1)
+            output_tokens.view(*topk_ids.shape, -1)
             .type(topk_weight.dtype)
             .mul_(topk_weight.unsqueeze(dim=-1))
             .sum(dim=1)
-            .type(gathered_tokens.dtype)
+            .type(returned_tokens.dtype)
         )
         return final_out
 
+    def moe_on_device(self, x, topk_ids, topk_weight):
+        # This part sorts the token indices so that tokens routed to the same expert reside consecutively.
+        # An implication is that tokens to the same "expert group" (i.e., device) are also consecutive.
+        # Since this is an "aritificial" index creation (final outcome being
+        # `idxs`), we don't need gradients here.
+        with torch.no_grad():
+            # [seq_len, n_routed_experts]
+            cnts = topk_ids.new_zeros((topk_ids.shape[0], self.config.n_routed_experts))
+            # Fill 1 to the selected experts
+            cnts.scatter_(1, topk_ids, 1)
+            tokens_per_expert = cnts.sum(dim=0)
+            # Token indices for each expert
+            idxs = topk_ids.view(-1).argsort()
+            sorted_tokens_shape = idxs.shape + x.shape[1:]
 
-def repeat_kv(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
-    """
-    This is the equivalent of torch.repeat_interleave(x, dim=1, repeats=n_rep). The hidden states go from (batch,
-    num_key_value_heads, seqlen, head_dim) to (batch, num_attention_heads, seqlen, head_dim)
-    """
-    batch, num_key_value_heads, slen, head_dim = hidden_states.shape
-    if n_rep == 1:
-        return hidden_states
-    hidden_states = hidden_states[:, :, None, :, :].expand(
-        batch, num_key_value_heads, n_rep, slen, head_dim
-    )
-    return hidden_states.reshape(batch, num_key_value_heads * n_rep, slen, head_dim)
+        sorted_tokens = x[idxs // topk_ids.shape[1]]
+        assert sorted_tokens.shape == sorted_tokens_shape
+
+        # This part exchange the information about the number of tokens send and
+        # received by each expert. We can understand this information as "side
+        # band", which is not part of the actual data. Thus no gradient is
+        # needed.
+        with torch.no_grad():
+            # Sum the tokens over local experts, then we get tokens per EP rank,
+            # which is the input splits
+            tokens_per_expert_group = tokens_per_expert.new_empty(
+                tokens_per_expert.shape[0]
+            )
+            dist.all_to_all_single(
+                tokens_per_expert_group, tokens_per_expert, group=self.ep_group
+            )
+            input_splits = tokens_per_expert.view(self.ep_size, -1).sum(dim=1)
+
+        # Move input to the `token_send_buf` symm mem
+        token_send_buf = self.get_send_buf()
+        token_send_buf[: idxs.shape[0]].copy_(sorted_tokens)
+        # Note: `out=` avoids copy, but it is not differentiable
+        # torch.index_select(x, 0, idxs // topk_ids.shape[1], out=token_send_buf[: idxs.shape[0]])
+        token_gather_buf, output_splits = OnDeviceAllToAllV.apply(
+            token_send_buf,
+            input_splits,
+            self.ep_group,
+        )
+
+        # We need to permute the received tokens so that tokens for the same expert are contiguous.
+        # This part prepares a 1D tensor `permuted_indices` for such permutation.
+        # This part doesn't need gradient.
+        with torch.no_grad():
+            permuted_indices, m_sizes, m_offsets = generate_permute_indices(
+                tokens_per_expert_group,
+                self.experts_per_rank,
+                self.ep_size,
+                token_gather_buf.shape[0],
+                ALIGN_SIZE_M,
+            )
+
+        # Permute the received tokens so that tokens for the same expert are contiguous.
+        contig_tokens = token_gather_buf[permuted_indices]
+
+        # Run the first grouped GEMM
+        w1 = self.get_parameter("gate_proj_weight")
+        if self.group_mm == "torchao":
+            gate_proj = grouped_gemm_forward(contig_tokens, w1, m_sizes)
+        else:  # "torch"
+            gate_proj = torch._grouped_mm(
+                contig_tokens, w1.transpose(-2, -1), m_offsets, out_dtype=torch.bfloat16
+            )
+
+        # Run the second grouped GEMM
+        w3 = self.get_parameter("up_proj_weight")
+        if self.group_mm == "torchao":
+            up_proj = grouped_gemm_forward(contig_tokens, w3, m_sizes)
+        else:  # "torch"
+            up_proj = torch._grouped_mm(
+                contig_tokens, w3.transpose(-2, -1), m_offsets, out_dtype=torch.bfloat16
+            )
+
+        # Apply activation
+        hidden_outputs = MLP.act_fn(gate_proj) * up_proj
+
+        # Run the third grouped GEMM
+        w2 = self.get_parameter("down_proj_weight")
+        if self.group_mm == "torchao":
+            hidden_outputs = grouped_gemm_forward(hidden_outputs, w2, m_sizes)
+        else:  # "torch"
+            hidden_outputs = torch._grouped_mm(
+                hidden_outputs,
+                w2.transpose(-2, -1),
+                m_offsets,
+                out_dtype=torch.bfloat16,
+            )
+
+        # Prepare buffer for tokens processed by experts
+        # Take necessary space from `token_gather_buf` symm mem because we are
+        # going to send them out after expert processing
+        processed_tokens = self.get_gather_buf()
+
+        # Move into Symmetric Memory for the return shuffle
+        processed_tokens[permuted_indices] = hidden_outputs
+
+        # Now shuffle the tokens back to their original owner, i.e. EP to DP shuffle.
+        # The input/output splits are just a reverse of the previous shuffle.
+        token_return_buf, _ = OnDeviceAllToAllV.apply(
+            processed_tokens,
+            output_splits,
+            self.ep_group,
+        )
+        returned_tokens = token_return_buf[: sorted_tokens_shape[0]]
+
+        output_tokens = torch.empty_like(returned_tokens)
+        output_tokens[idxs] = returned_tokens
+        final_out = (
+            output_tokens.view(*topk_ids.shape, -1)
+            .type(topk_weight.dtype)
+            .mul_(topk_weight.unsqueeze(dim=-1))
+            .sum(dim=1)
+            .type(returned_tokens.dtype)
+        )
+        return final_out
 
 
 class Attention(nn.Module):
@@ -755,13 +936,6 @@ class Attention(nn.Module):
             else:
                 raise ValueError(f"Unknown RoPE scaling type {scaling_type}")
 
-    def _shape(self, tensor: torch.Tensor, seq_len: int, bsz: int):
-        return (
-            tensor.view(bsz, seq_len, self.num_heads, self.v_head_dim)
-            .transpose(1, 2)
-            .contiguous()
-        )
-
     def forward(
         self,
         hidden_states: torch.Tensor,
@@ -795,11 +969,6 @@ class Attention(nn.Module):
         )
         kv_seq_len = value_states.shape[-2]
 
-        # If there is kv cache (inference), we need to use the full sequence
-        # length
-        # if past_key_value is not None:
-        #     kv_seq_len += past_key_value.get_usable_length(kv_seq_len, self.layer_idx)
-
         cos, sin = self.rotary_emb(value_states, seq_len=kv_seq_len)
 
         q_pe, k_pe = apply_rotary_pos_emb(q_pe, k_pe, cos, sin, position_ids)
@@ -812,59 +981,35 @@ class Attention(nn.Module):
         key_states[:, :, :, : self.qk_nope_head_dim] = k_nope
         key_states[:, :, :, self.qk_nope_head_dim :] = k_pe
 
-        # if past_key_value is not None:
-        #     cache_kwargs = {"sin": sin, "cos": cos}  # Specific to RoPE models
-        #     key_states, value_states = past_key_value.update(
-        #         key_states, value_states, self.layer_idx, cache_kwargs
-        #     )
-
-        attn_weights = (
-            torch.matmul(query_states, key_states.transpose(2, 3)) * self.softmax_scale
-        )
-
-        if attn_weights.size() != (bsz, self.num_heads, q_len, kv_seq_len):
-            raise ValueError(
-                f"Attention weights should be of size {(bsz, self.num_heads, q_len, kv_seq_len)}, but is"
-                f" {attn_weights.size()}"
+        if attention_mask is not None:
+            # Attention mask was made 4D because the `attn_weights` above is 4D.
+            # We probably can make this mask smarter if we want to pack sequences
+            # together, instead of using padding. This optimization can be used in
+            # inference. For training, if we want to pack sequences, data loader
+            # will pass in a mask containing such info.
+            attention_mask = _prepare_4d_causal_attention_mask(
+                attention_mask,  # None, or user provided mask in 2D
+                (bsz, q_len),
+                hidden_states,
+                0,  # past_key_values_length, 0 when training
             )
+            if attention_mask.size() != (bsz, 1, q_len, kv_seq_len):
+                raise ValueError(
+                    f"Attention mask should be of size {(bsz, 1, q_len, kv_seq_len)}, but is {attention_mask.size()}"
+                )
 
-        # Attention mask was made 4D because the `attn_weights` above is 4D.
-        # We probably can make this mask smarter if we want to pack sequences
-        # together, instead of using padding. This optimization can be used in
-        # inference. For training, if we want to pack sequences, data loader
-        # will pass in a mask containing such info.
-        attention_mask = _prepare_4d_causal_attention_mask(
-            attention_mask,  # None, or user provided mask in 2D
-            (bsz, q_len),
-            hidden_states,
-            0,  # past_key_values_length, 0 when training
+        attn_output = torch.nn.functional.scaled_dot_product_attention(
+            query=query_states,
+            key=key_states,
+            value=value_states,
+            attn_mask=attention_mask,
+            dropout_p=self.attention_dropout,
+            is_causal=attention_mask is None,
+            scale=self.softmax_scale,
         )
-        if attention_mask.size() != (bsz, 1, q_len, kv_seq_len):
-            raise ValueError(
-                f"Attention mask should be of size {(bsz, 1, q_len, kv_seq_len)}, but is {attention_mask.size()}"
-            )
-
-        attn_weights = attn_weights + attention_mask
-
-        # upcast attention to fp32
-        attn_weights = nn.functional.softmax(
-            attn_weights, dim=-1, dtype=torch.float32
-        ).to(query_states.dtype)
-        attn_weights = nn.functional.dropout(
-            attn_weights, p=self.attention_dropout, training=self.training
-        )
-        attn_output = torch.matmul(attn_weights, value_states)
-
-        if attn_output.size() != (bsz, self.num_heads, q_len, self.v_head_dim):
-            raise ValueError(
-                f"`attn_output` should be of size {(bsz, self.num_heads, q_len, self.v_head_dim)}, but is"
-                f" {attn_output.size()}"
-            )
 
         attn_output = attn_output.transpose(1, 2).contiguous()
-
         attn_output = attn_output.reshape(bsz, q_len, self.num_heads * self.v_head_dim)
-
         attn_output = self.o_proj(attn_output)
 
         return attn_output
@@ -1196,3 +1341,11 @@ class DeepseekForCausalLM(torch.nn.Module):
                 ),
             )
         return reordered_past
+
+    # Setup Symmetric Memory for MoE token shuffle.
+    # Supports inference currently.
+    def setup_symm_mem(self, dtype: torch.dtype, device: torch.device):
+        for layer in self.model.layers.values():
+            if not isinstance(layer.mlp, MoE):
+                continue
+            layer.mlp.setup_symm_mem(dtype, device)

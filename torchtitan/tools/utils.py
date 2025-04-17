@@ -11,10 +11,16 @@ from dataclasses import dataclass
 from typing import Optional
 
 import torch
-import torch.nn as nn
 from torch._utils import _get_available_device_type, _get_device_module
 
 from torchtitan.tools.logging import logger
+
+
+def has_cuda_capability(major: int, minor: int) -> bool:
+    return torch.cuda.is_available() and torch.cuda.get_device_capability() >= (
+        major,
+        minor,
+    )
 
 
 def get_device_info():
@@ -47,36 +53,7 @@ class GarbageCollection:
         logger.info("[GC] %s %.2f seconds.", reason, time.monotonic() - begin)
 
 
-def get_num_params(model: nn.Module, exclude_embedding: bool = False) -> int:
-    num_params = sum(p.numel() for p in model.parameters())
-    if exclude_embedding:
-        num_params -= sum(
-            sum(p.numel() for p in m.parameters())
-            for m in model.children()
-            if isinstance(m, nn.Embedding)
-        )
-    return num_params
-
-
-def get_num_flop_per_token(num_params: int, model_config, seq_len) -> int:
-    l, h, q, t = (
-        model_config.n_layers,
-        model_config.n_heads,
-        model_config.dim // model_config.n_heads,
-        seq_len,
-    )
-    # Reasoning behind the factor of 12 for the self-attention part of the formula:
-    # 1. each self-attention has 2 matmul in the forward and 4 in the backward (6)
-    # 2. the flash attention does 1 more matmul recomputation in the backward
-    #    but recomputation should not be counted in calculating MFU           (+0)
-    # 3. each matmul performs 1 multiplication and 1 addition                 (*2)
-    # 4. we follow the convention and do not account for sparsity in causal attention
-    flop_per_token = 6 * num_params + 12 * l * h * q * t
-
-    return flop_per_token
-
-
-# hardcoded BF16 type peak flops for NVIDIA A100, H100, H200 GPU and AMD MI250, MI300X and AMD MI325X
+# hardcoded BF16 type peak flops for NVIDIA A100, H100, H200 GPU and AMD MI250, MI300X, AMD MI325X and Intel PVC
 def get_peak_flops(device_name: str) -> int:
     try:
         # Run the lspci command and capture the output
@@ -113,6 +90,16 @@ def get_peak_flops(device_name: str) -> int:
     elif "MI250X" in device_name:
         # data from https://www.amd.com/en/products/accelerators/instinct/mi200/mi250x.html (per GCD)
         return 191.5e12
+    elif "Data Center GPU Max 1550" in device_name:
+        # Also known as Ponte Vecchio (PVC).
+        # data from https://www.intel.com/content/www/us/en/docs/oneapi/optimization-guide-gpu/2025-0/intel-xe-gpu-architecture.html
+        # Dot Product Accumulate Systolic (DPAS):
+        # - Freq: 1300MHz
+        # - #ops: 512
+        # Full EU mode (i.e. 512 max compute units): 340.8 TFLOPS (BF16)
+        # Standard EU mode (i.e. 448 max compute units): 298.2 TFLOPS (BF16)
+        max_comp_units = torch.xpu.get_device_properties("xpu").max_compute_units
+        return 512 * max_comp_units * 1300 * 10**6
     else:  # for other GPU types, assume A100
         logger.warning(f"Peak flops undefined for: {device_name}, fallback to A100")
         return 312e12

@@ -25,53 +25,98 @@ __all__ = ["build_pipeline_schedule", "generate_split_points", "stage_ids_this_r
 # TODO: It's unclear if this API is general enough to be used by other models.
 # If not, we should move it to a Transformer-specific directory.
 def generate_split_points(
-    pipeline_parallel_schedule: str, pp_dim: int, num_layers: int
+    schedule_str: str,
+    pp_degree: int,
+    num_layers: int,
+    num_layers_per_stage: int | None,
+    input_weight: int = 1,
+    output_weight: int = 1,
 ) -> list[str]:
     """
-    Generate a default split point based on the number of layers and
-    pipeline parallel dimension.
+    Generate a list of split points based on the input configs. In this function,
+    the number of effective layers considered is the summation of num_layers,
+    input_weight, and output_weight.
+
+    If num_layers_per_virtual_stage is given, we require rigid fit of the
+    effective layers (regular layers + weighted input + weighted output)
+    onto pipeline stages and ranks, with several assertions. It is the users'
+    responsibility to figure out the input weight, output weight, and the
+    number of regular layers, so that they can be arranged neatly.
+
+    If num_layers_per_virtual_stage is None, we by default set each pipeline rank
+    to have 1 stage if schedule_str is a single-stage schedule, or 2 virtual stages
+    if it is a multi-stage schedule, and try to distribute all effective layers
+    evenly onto the PP stages. If there are extra layers, we disperse them in
+    the starting stages.
 
     Args:
-        job_config (JobConfig): The job configuration.
-        pp_dim (int): The pipeline parallel dimension.
+        schedule_str (str): The string of the schedule name.
+        pp_degree (int): The pipeline parallel dimension.
         num_layers (int): The number of layers in the model.
+        input_weight (int): The number of layers to consider the input modules in layer calculation.
+        output_weight (int): The number of layers to consider the output modules in layer calculation.
+        num_layers_per_stage (int): The number of layers per (virtual) pipeline stage.
 
     Returns:
         list[str]: A list of split point FQNs.
     """
 
-    schedule_class = get_schedule_class(pipeline_parallel_schedule)
-    if issubclass(schedule_class, PipelineScheduleSingle):
-        num_stages_per_rank = 1
-    elif issubclass(schedule_class, PipelineScheduleMulti):
-        # Multi-stage schedules support more than 2 stages per rank, but this is the default if
-        # no pipeline split is specified
-        num_stages_per_rank = 2
-    else:
-        raise ValueError(f"Unsupported pipeline schedule: {pipeline_parallel_schedule}")
-    total_stages = pp_dim * num_stages_per_rank
-    if total_stages > num_layers:
-        raise ValueError("Total stages cannot be greater than the number of layers")
+    schedule_class = get_schedule_class(schedule_str)
+    is_single_stage_schedule = issubclass(schedule_class, PipelineScheduleSingle)
 
-    base_interval = num_layers // total_stages
-    extra_layers = num_layers % total_stages
+    num_effective_layers = num_layers + input_weight + output_weight
+
+    if num_layers_per_stage is not None:
+        # If num_layers_per_stage is provided, we require a rigid fit of the effective layers
+        assert num_effective_layers % pp_degree == 0
+        num_layers_per_pipeline_rank = num_effective_layers // pp_degree
+
+        assert num_layers_per_pipeline_rank % num_layers_per_stage == 0
+        num_stages_per_rank = num_layers_per_pipeline_rank // num_layers_per_stage
+
+        num_total_virtual_stages = num_stages_per_rank * pp_degree
+        num_extra_layers = 0
+
+        if is_single_stage_schedule:
+            assert (
+                num_stages_per_rank == 1
+            ), f"Number of stages per rank ({num_stages_per_rank}) must be 1 for single-stage schedules."
+        else:
+            assert (
+                num_stages_per_rank >= 2
+            ), f"Number of stages per rank ({num_stages_per_rank}) must be >= 2 for multi-stage schedules."
+    else:
+        # In a multi-stage schedule, if num_layers_per_stage is not
+        # provided, by default each pipeline rank has 2 virtual stages.
+        num_stages_per_rank = 1 if is_single_stage_schedule else 2
+        num_total_virtual_stages = pp_degree * num_stages_per_rank
+
+        if num_total_virtual_stages > num_effective_layers:
+            raise ValueError(
+                "The number of total stages cannot be greater than the number of effective layers."
+            )
+
+        num_layers_per_stage = num_effective_layers // num_total_virtual_stages
+        num_extra_layers = num_effective_layers % num_total_virtual_stages
+
+    assert num_layers_per_stage >= max(input_weight, output_weight)
 
     splits = []
     current_layer = 0
-    for i in range(total_stages - 1):
+    for i in range(num_total_virtual_stages - 1):
         if i == 0:
-            current_layer += base_interval
+            current_layer += num_layers_per_stage - input_weight
         else:
-            # Middle stages get an extra layer if there are any remaining
-            if extra_layers > 0:
-                current_layer += base_interval + 1
-                extra_layers -= 1
-            else:
-                current_layer += base_interval
+            current_layer += num_layers_per_stage
+        # extra layers will be dispersed to the first stages
+        if num_extra_layers > 0:
+            current_layer += 1
+            num_extra_layers -= 1
         splits.append("layers." + str(current_layer))
+
     logger.info(
-        f"No 'pipeline_parallel_split_points' provided so the generated splits are: {splits} "
-        "This may be sub-optimal as the number of layers per stage may be unbalanced."
+        "No 'pipeline_parallel_split_points' provided. Here is the auto-generated split, "
+        f"which may be sub-optimal: {splits}."
     )
     return splits
 
@@ -104,22 +149,21 @@ def build_pipeline_schedule(
         )
 
     looped_schedule = issubclass(schedule_class, PipelineScheduleMulti)
-    n_microbatches = job_config.parallelism.pipeline_parallel_microbatches
+    microbatch_size = job_config.parallelism.pipeline_parallel_microbatch_size
+    batch_size = job_config.training.batch_size
+    # validate that the batch size is divisible by the microbatch_size otherwise we'll hang or error during training
+    if batch_size % microbatch_size != 0:
+        raise ValueError(
+            f"Batch size {job_config.training.batch_size} must be divisible by number of microbatches {n_microbatches}. "
+            "Update the config arguments for either batch_size or pipeline_parallel_microbatch_size."
+        )
+    n_microbatches = batch_size // microbatch_size
     # We expect that the number of local stages (`len(stages)`) is the same across all ranks
     num_total_stages = job_config.parallelism.pipeline_parallel_degree * len(stages)
-    if n_microbatches is None:
-        n_microbatches = num_total_stages
-    elif n_microbatches < num_total_stages:
+    if n_microbatches < num_total_stages:
         logger.warning(
             f"Number of microbatches ({n_microbatches}) is less than the total number "
             f"of stages ({num_total_stages}) which may result in a bubble in the pipeline."
-        )
-
-    # validate that the batch size is divisible by the number of microbatches otherwise we'll hang or error during training
-    if job_config.training.batch_size % n_microbatches != 0:
-        raise ValueError(
-            f"Batch size {job_config.training.batch_size} must be divisible by number of microbatches {n_microbatches}. "
-            "Update the config arguments for either batch_size or pipeline_parallel_microbatches."
         )
 
     schedule = schedule_class(
