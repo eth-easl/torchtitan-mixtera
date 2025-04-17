@@ -9,15 +9,15 @@ from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional
 
 import torch
+
+from datasets import Dataset, load_dataset
+from datasets.distributed import split_dataset_by_node
 from torch.distributed.checkpoint.stateful import Stateful
 from torch.utils.data import IterableDataset
 from torchdata.stateful_dataloader import StatefulDataLoader
 
 from torchtitan.datasets.tokenizer import Tokenizer
 from torchtitan.logging import logger
-
-from datasets import Dataset, load_dataset
-from datasets.distributed import split_dataset_by_node
 
 
 def _load_c4_dataset(dataset_path: str, streaming: bool):
@@ -132,13 +132,13 @@ class HuggingFaceDataset(IterableDataset, Stateful):
         self._all_tokens: List[int] = []
 
     def _get_data_iter(self):
-        if self._sample_idx == 0:
-            return iter(self._data)
-
         if isinstance(self._data, Dataset) and self._sample_idx == len(self._data):
             return iter([])
 
-        return iter(self._data.skip(self._sample_idx))
+        it = iter(self._data)
+        for _ in range(self._sample_idx):
+            next(it)
+        return it
 
     def __iter__(self):
         max_buffer_token_len = 1 + self.seq_len
@@ -256,14 +256,22 @@ class DPAwareDataLoader(StatefulDataLoader, Stateful):
     A wrapper around the StatefulDataLoader that ensures that the state is stored only once per DP rank.
     """
 
-    def __init__(self, dp_rank: int, hf_ds: IterableDataset, batch_size: int, num_workers: int):
+    def __init__(
+        self, dp_rank: int, hf_ds: IterableDataset, batch_size: int, world_size: int, num_workers: int
+    ):
         super().__init__(hf_ds, batch_size, num_workers=num_workers)
         self._dp_rank = dp_rank
         self._rank_id = f"dp_rank_{dp_rank}"
+        # Data loader resharding is not yet supported, so we need to store the world size to compare during loading
+        # raise error if dp_word_size does not match.
+        self._world_size = world_size
 
     def state_dict(self) -> Dict[str, Any]:
         # Store state only for dp rank to avoid replicating the same state across other dimensions
-        return {self._rank_id: pickle.dumps(super().state_dict())}
+        return {
+            self._rank_id: pickle.dumps(super().state_dict()),
+            "world_size": self._world_size,
+        }
 
     def load_state_dict(self, state_dict: Dict[str, Any]) -> None:
         # State being empty is valid
@@ -275,6 +283,9 @@ class DPAwareDataLoader(StatefulDataLoader, Stateful):
                 f"DataLoader state is empty for dp rank {self._dp_rank}, expected key {self._rank_id}"
             )
             return
+        assert (
+            self._world_size == state_dict["world_size"]
+        ), "dp_degree is inconsistent before and after checkpoint, dataloader resharding is not supported yet."
         super().load_state_dict(pickle.loads(state_dict[self._rank_id]))
 
 
@@ -298,4 +309,4 @@ def build_hf_data_loader(
     hf_ds = hf_class(
         dataset_name, dataset_path, tokenizer, seq_len, world_size, rank, add_bos, add_eos, infinite
     )
-    return DPAwareDataLoader(rank, hf_ds, batch_size=batch_size, num_workers=num_workers)
+    return DPAwareDataLoader(rank, hf_ds, batch_size=batch_size, world_size=world_size, num_workers=num_workers)
