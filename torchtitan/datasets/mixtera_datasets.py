@@ -34,10 +34,10 @@ class MixteraWrapper(torch.utils.data.IterableDataset):
             seq_len = len(input)
             
             if not self.return_key_id:
-                yield input, label
+                yield {"input": input}, label
             else:
                 key_ids = torch.full((seq_len,), key_id, dtype=torch.long) if self.return_key_id else None
-                yield input, label, key_ids
+                yield {"input": input}, label, key_ids
 
     def __getstate__(self):
         state = self.__dict__.copy()

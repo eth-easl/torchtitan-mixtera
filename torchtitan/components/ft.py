@@ -44,7 +44,7 @@ class FTManager:
         assert self._manager is not None
         return self._manager
 
-    def get_dp_info(self, dp_degree: int, dp_rank: int) -> int:
+    def get_dp_info(self, dp_degree: int, dp_rank: int) -> tuple[int, int]:
         return dp_degree * self.group_size, dp_degree * self.replica_id + dp_rank
 
 
@@ -120,19 +120,18 @@ class FTParallelDims(ParallelDims):
 def ft_dist_reduce(
     x: torch.Tensor, reduceOp: str, mesh: DeviceMesh
 ) -> tuple[torch.Tensor, str, DeviceMesh]:
-    if has_torchft:
-        if isinstance(mesh, ft.process_group._FlattenDeviceMesh):
-            x = funcol.all_reduce(
-                x, reduceOp=reduceOp, group=mesh.managed_mesh.replicate_pg
-            )
-            return x, reduceOp, mesh.managed_mesh.mesh
+    if has_torchft and isinstance(mesh, ft.device_mesh._FlattenDeviceMesh):
+        x = funcol.all_reduce(
+            x, reduceOp=reduceOp, group=mesh.managed_mesh.replicate_pg
+        )
+        return x, reduceOp, mesh.managed_mesh.mesh
     return x, reduceOp, mesh
 
 
 def ft_clip_grad_norm_util(total_norm: DTensor) -> torch.Tensor:
     if has_torchft:
         mesh = total_norm._spec.mesh
-        if isinstance(mesh, ft.process_group.ManagedDeviceMesh):
+        if isinstance(mesh, ft.device_mesh.ManagedDeviceMesh):
             # The gradients along the replicated dim has already been reduced.
             # So we don't need another reducution beforing removing the
             # replicate dimension

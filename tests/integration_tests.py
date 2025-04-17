@@ -94,6 +94,18 @@ def build_test_list():
             "2D compile",
             "2d_compile",
         ),
+        # TODO: re-enable this test once the async TP issue is fixed
+        # OverrideDefinitions(
+        #     [
+        #         [
+        #             "--training.compile",
+        #             "--parallelism.tensor_parallel_degree 2",
+        #             "--parallelism.enable_async_tensor_parallel",
+        #         ],
+        #     ],
+        #     "2D async TP compile",
+        #     "2d_asynctp_compile",
+        # ),
         OverrideDefinitions(
             [
                 [
@@ -144,7 +156,6 @@ def build_test_list():
                 [
                     "--parallelism.pipeline_parallel_degree 2",
                     "--parallelism.pipeline_parallel_schedule ZBVZeroBubble",
-                    "--parallelism.pipeline_parallel_microbatches 8",
                 ],
             ],
             "PP zero bubble test (v shaped)",
@@ -180,6 +191,12 @@ def build_test_list():
                 [
                     "--parallelism.pipeline_parallel_degree 2",
                     "--parallelism.pipeline_parallel_schedule 1F1B",
+                    "--parallelism.data_parallel_shard_degree 2",
+                ],
+                [
+                    "--parallelism.pipeline_parallel_degree 2",
+                    "--parallelism.pipeline_parallel_schedule 1F1B",
+                    "--parallelism.pipeline_parallel_layers_per_stage 4",
                     "--parallelism.data_parallel_shard_degree 2",
                 ],
             ],
@@ -246,6 +263,11 @@ def build_test_list():
                     "--parallelism.pipeline_parallel_degree 4",
                     "--parallelism.pipeline_parallel_schedule Interleaved1F1B",
                 ],
+                [
+                    "--parallelism.pipeline_parallel_degree 4",
+                    "--parallelism.pipeline_parallel_schedule Interleaved1F1B",
+                    "--parallelism.pipeline_parallel_layers_per_stage 1",
+                ],
             ],
             "PP looped 1F1B test",
             "pp_looped_1f1b",
@@ -257,7 +279,6 @@ def build_test_list():
                     "--parallelism.pipeline_parallel_degree 2",
                     "--parallelism.pipeline_parallel_schedule PipelineScheduleMulti",
                     "--parallelism.pipeline_parallel_schedule_csv ./tests/assets/custom_schedule.csv",
-                    "--parallelism.pipeline_parallel_microbatches 8",
                 ],
             ],
             "PP with custom pipeline schedule loaded from CSV file",
@@ -294,6 +315,18 @@ def build_test_list():
             ],
             "HSDP",
             "hsdp",
+            ngpu=4,
+        ),
+        OverrideDefinitions(
+            [
+                [
+                    "--parallelism.data_parallel_shard_degree=4",
+                    "--activation_checkpoint.mode='full'",
+                    "--model.flavor=debugmodel_flex_attn",
+                ]
+            ],
+            "FSDP+FLEX_ATTN",
+            "fsdp+flex_attn",
             ngpu=4,
         ),
         OverrideDefinitions(
@@ -524,7 +557,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("output_dir")
     parser.add_argument(
-        "--config_dir", default="./torchtitan/models/llama/train_configs"
+        "--config_dir", default="./torchtitan/models/llama3/train_configs"
     )
     parser.add_argument(
         "--test",

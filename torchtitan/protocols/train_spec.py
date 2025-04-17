@@ -9,16 +9,24 @@
 
 from dataclasses import dataclass
 from typing import Callable, Optional, Dict, Protocol, Type, TypeAlias
+from abc import abstractmethod
+from collections.abc import Callable, Mapping
 
 import torch
 import torch.nn as nn
 from torch.distributed.pipelining.schedules import _PipelineSchedule
+
 from torchtitan.components.dataloader import BaseDataLoader
+from torchtitan.components.ft import FTManager
+from torchtitan.components.loss import LossFunction
 from torchtitan.components.lr_scheduler import LRSchedulersContainer
 from torchtitan.components.metrics import MetricsProcessor
 from torchtitan.components.optimizer import OptimizersContainer
 from torchtitan.components.tokenizer import Tokenizer
 from torchtitan.config_manager import JobConfig
+
+DeviceType = int | str | torch.device
+
 
 @dataclass
 class BaseModelArgs:
@@ -29,6 +37,16 @@ class BaseModelArgs:
     """
 
     _enforced: str = "This field is used to enforce all fields have defaults."
+
+    @abstractmethod
+    def update_from_config(self, job_config: JobConfig, tokenizer: Tokenizer) -> None:
+        pass
+
+    @abstractmethod
+    def get_nparams_and_flops(
+        self, model: nn.Module, seq_len: int
+    ) -> tuple[int, float]:
+        pass
 
 
 class ModelProtocol(Protocol):
@@ -43,31 +61,35 @@ class ModelProtocol(Protocol):
         ...
 
 
-DataLoaderBuilder: TypeAlias = Callable[[...], BaseDataLoader]
-TokenizerBuilder: TypeAlias = Callable[[...], Tokenizer]
-MetricsProcessorBuilder: TypeAlias = Callable[[...], MetricsProcessor]
-OptimizersBuilder: TypeAlias = Callable[
-    [list[nn.Module], JobConfig], OptimizersContainer
+ParallelizeFunction: TypeAlias = Callable[..., nn.Module]
+PipeliningFunction: TypeAlias = Callable[
+    ..., tuple[_PipelineSchedule, list[nn.Module], bool, bool]
 ]
-LRSchedulersBuilder: TypeAlias = Callable[[OptimizersContainer], LRSchedulersContainer]
-LossFunction: TypeAlias = Callable[[torch.Tensor, torch.Tensor], torch.Tensor]
+DataLoaderBuilder: TypeAlias = Callable[..., BaseDataLoader]
+TokenizerBuilder: TypeAlias = Callable[..., Tokenizer]
+MetricsProcessorBuilder: TypeAlias = Callable[..., MetricsProcessor]
+OptimizersBuilder: TypeAlias = Callable[
+    [list[nn.Module], JobConfig, FTManager], OptimizersContainer
+]
+LRSchedulersBuilder: TypeAlias = Callable[
+    [OptimizersContainer, JobConfig], LRSchedulersContainer
+]
+LossFunctionBuilder: TypeAlias = Callable[..., LossFunction]
 
 
 @dataclass
 class TrainSpec:
     name: str
-    cls: Type[nn.Module]
-    config: dict[str, BaseModelArgs]
-    parallelize_fn: Callable[[nn.Module], nn.Module]
-    pipelining_fn: Optional[
-        Callable[[nn.Module], tuple[_PipelineSchedule, list[nn.Module], bool, bool]]
-    ]
+    cls: type[nn.Module]
+    config: Mapping[str, BaseModelArgs]
+    parallelize_fn: ParallelizeFunction
+    pipelining_fn: PipeliningFunction | None
     build_optimizers_fn: OptimizersBuilder
     build_lr_schedulers_fn: LRSchedulersBuilder
     build_dataloader_fn: DataLoaderBuilder
-    build_tokenizer_fn: TokenizerBuilder
-    loss_fn: LossFunction
-    build_metrics_processor_fn: Optional[MetricsProcessorBuilder] = None
+    build_tokenizer_fn: TokenizerBuilder | None
+    build_loss_fn: LossFunctionBuilder
+    build_metrics_processor_fn: MetricsProcessorBuilder | None = None
 
 
 _train_specs = {}

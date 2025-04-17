@@ -13,14 +13,14 @@ import torch
 import pathlib
 
 from datetime import timedelta
-from typing import Any, Iterable, Optional
+from typing import Any, Generator, Iterable, Optional
 
 import torch
-
 from torch.distributed.elastic.multiprocessing.errors import record
 
 import torchtitan.components.ft as ft
 import torchtitan.protocols.train_spec as train_spec_module
+
 from torchtitan.components.checkpoint import CheckpointManager
 from torchtitan.components.metrics import (
     build_metrics_processor,
@@ -29,7 +29,7 @@ from torchtitan.components.metrics import (
 from torchtitan.config_manager import JobConfig
 from torchtitan.datasets import build_hf_data_loader, build_tokenizer
 from torchtitan.datasets.mixtera_datasets import build_mixtera_data_loader
-from torchtitan.models.llama.model import PerDomainLoss
+from torchtitan.models.llama3.model import PerDomainLoss
 
 from torchtitan.distributed import ParallelDims, utils as dist_utils
 from torchtitan.protocols.model_converter import build_model_converters
@@ -64,8 +64,10 @@ class Trainer(torch.distributed.checkpoint.stateful.Stateful):
     dataloader: train_spec_module.BaseDataLoader
     metrics_processor: train_spec_module.MetricsProcessor
     checkpointer: CheckpointManager
+    train_context: Generator[None, None, None]
 
     model_parts: list[torch.nn.Module]
+    loss_fn: train_spec_module.LossFunction
     optimizers: train_spec_module.OptimizersContainer
     lr_schedulers: train_spec_module.LRSchedulersContainer
 
@@ -360,9 +362,9 @@ class Trainer(torch.distributed.checkpoint.stateful.Stateful):
         # 1. norm type to decide which norm layer to use
         # 2. vocab size from tokenizer
         # 3. max_seq_len base on inputs
-        model_config.norm_type = job_config.model.norm_type
         model_config.vocab_size = vocab_size
-        model_config.max_seq_len = job_config.training.seq_len
+        # set the model args from training job configs
+        model_config.update_from_config(job_config, tokenizer)
 
         logger.info(
             f"Building {self.train_spec.name} {job_config.model.flavor} with {model_config}"
@@ -383,13 +385,11 @@ class Trainer(torch.distributed.checkpoint.stateful.Stateful):
         self.metrics_processor = build_metrics_processor_fn(job_config, parallel_dims)
         color = self.metrics_processor.color
 
-        # log model size
-        model_param_count = utils.get_num_params(model)
-        self.metrics_processor.num_flop_per_token = utils.get_num_flop_per_token(
-            utils.get_num_params(model, exclude_embedding=True),
-            model_config,
-            job_config.training.seq_len,
-        )
+        # calculate model size and flops per token
+        (
+            model_param_count,
+            self.metrics_processor.num_flops_per_token,
+        ) = model_config.get_nparams_and_flops(model, job_config.training.seq_len)
 
         logger.info(
             f"{color.blue}Model {self.train_spec.name} {job_config.model.flavor} "
@@ -397,7 +397,11 @@ class Trainer(torch.distributed.checkpoint.stateful.Stateful):
         )
 
         # Note we ignore loss_fn from train spec because we hardcode the perdomainloss in this repo.
-        self.per_domain_loss_module = PerDomainLoss(device=self.device) 
+        self.per_domain_loss_module = PerDomainLoss(device=self.device)
+        if job_config.training.compile:
+            logger.info("compiling per domain loss module")
+            self.per_domain_loss_module = torch.compile(self.per_domain_loss_module)
+            logger.info("compiled.")
 
         # move sharded model to CPU/GPU and initialize weights via DTensor
         if job_config.checkpoint.create_seed_checkpoint:
@@ -409,6 +413,8 @@ class Trainer(torch.distributed.checkpoint.stateful.Stateful):
         else:
             init_device = device_type
             buffer_device = None
+
+        self.loss_fn = self.train_spec.build_loss_fn(job_config)
 
         # apply parallelisms and initialization
         if parallel_dims.pp_enabled:
@@ -432,7 +438,7 @@ class Trainer(torch.distributed.checkpoint.stateful.Stateful):
                 self.device,
                 model_config,
                 self.train_spec.parallelize_fn,
-                self.train_spec.loss_fn,
+                self.loss_fn,
             )
             # when PP is enabled, `model` obj is no longer used after this point,
             # model_parts is used instead
@@ -501,32 +507,18 @@ class Trainer(torch.distributed.checkpoint.stateful.Stateful):
             ft_manager=ft_manager,
         )
 
-        if job_config.checkpoint.create_seed_checkpoint:
-            assert (
-                world_size == 1
-            ), "Must create seed checkpoint using a single device, to disable sharding"
-            assert (
-                job_config.checkpoint.enable_checkpoint
-            ), "Must enable checkpointing when creating a seed checkpoint"
-            self.checkpointer.save(curr_step=0, force=True)
-            logger.info("Created seed checkpoint")
-            return
-
-        self.checkpointer.load(step=job_config.checkpoint.load_step)
-
         self.train_context = dist_utils.get_train_context(
             parallel_dims.loss_parallel_enabled,
             parallelism_config.enable_compiled_autograd,
         )
 
         logger.info(
-            "Trainer initialized. "
-            f"Training starts at step {self.step + 1}, "
-            f"with local batch size {job_config.training.batch_size}, "
+            "Trainer is initialized with "
+            f"local batch size {job_config.training.batch_size}, "
             f"global batch size {job_config.training.batch_size * dp_degree}, "
             f"sequence length {job_config.training.seq_len}, "
             f"total steps {job_config.training.steps} "
-            f"(warmup {job_config.lr_scheduler.warmup_steps})"
+            f"(warmup {job_config.lr_scheduler.warmup_steps})."
         )
 
     def next_batch(self, data_iterator: Iterable) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None]:
@@ -534,10 +526,10 @@ class Trainer(torch.distributed.checkpoint.stateful.Stateful):
         batch = next(data_iterator)
     
         if len(batch) == 3:
-            input_ids, labels, key_ids = batch
+            input_dict, labels, key_ids = batch
         else:
             assert len(batch) == 2
-            input_ids, labels = batch
+            input_dict, labels = batch
             key_ids = None
 
         self.metrics_processor.ntokens_since_last_log += labels.numel()
@@ -546,13 +538,14 @@ class Trainer(torch.distributed.checkpoint.stateful.Stateful):
         )
 
         device_type = utils.device_type
-        input_ids = input_ids.to(device_type)
+        for k, _ in input_dict.items():
+            input_dict[k] = input_dict[k].to(device_type)
         labels = labels.to(device_type)
         key_ids = key_ids.to(device_type) if key_ids is not None else key_ids
 
-        return input_ids, labels, key_ids 
+        return input_dict, labels, key_ids 
 
-    def train_step(self, inputs: torch.Tensor, labels: torch.Tensor, key_ids: torch.Tensor | None):
+    def train_step(self, input_dict: dict[str, torch.Tensor], labels: torch.Tensor, key_ids: torch.Tensor | None):
         self.optimizers.zero_grad()
 
         # Keep these variables local to shorten the code as these are
@@ -568,9 +561,9 @@ class Trainer(torch.distributed.checkpoint.stateful.Stateful):
         init_async_start = 0
         init_async_time = 0
 
-
         # apply context parallelism if cp is enabled
         # ensure CP handles the separate freqs_cis buffer for each pp stage
+        inputs = input_dict["input"]
         optional_context_parallel_ctx = (
             dist_utils.create_context_parallel_ctx(
                 cp_mesh=world_mesh["cp"],
@@ -680,13 +673,17 @@ class Trainer(torch.distributed.checkpoint.stateful.Stateful):
                 dist_utils.dist_max(loss, world_mesh["dp_cp"]),
             )
         else:
-            global_avg_loss = global_max_loss = loss.item()
+            global_avg_loss = global_max_loss = loss.detach().item()
 
         self.metrics_processor.log(self.step, global_avg_loss, global_max_loss, init_async_time, wait_mixtera_time, mixtera_feedback_time)
 
     @record
     def train(self):
         job_config = self.job_config
+
+        self.checkpointer.load(step=job_config.checkpoint.load_step)
+        logger.info(f"Training starts at step {self.step + 1}.")
+
         with maybe_enable_profiling(
             job_config, global_step=self.step
         ) as torch_profiler, maybe_enable_memory_snapshot(
@@ -747,7 +744,18 @@ if __name__ == "__main__":
 
     try:
         trainer = Trainer(config)
-        trainer.train()
+
+        if config.checkpoint.create_seed_checkpoint:
+            assert int(
+                os.environ["WORLD_SIZE"]
+            ), "Must create seed checkpoint using a single device, to disable sharding."
+            assert (
+                config.checkpoint.enable_checkpoint
+            ), "Must enable checkpointing when creating a seed checkpoint."
+            trainer.checkpointer.save(curr_step=0, force=True)
+            logger.info("Created seed checkpoint")
+        else:
+            trainer.train()
     finally:
         if trainer:
             trainer.close()
