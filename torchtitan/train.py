@@ -29,7 +29,7 @@ from torchtitan.components.metrics import (
 from torchtitan.config_manager import JobConfig
 from torchtitan.datasets import build_hf_data_loader, build_tokenizer
 from torchtitan.datasets.mixtera_datasets import build_mixtera_data_loader
-from torchtitan.models.llama.model import PerDomainLoss
+from torchtitan.models.llama3.model import PerDomainLoss
 
 from torchtitan.distributed import ParallelDims, utils as dist_utils
 from torchtitan.protocols.model_converter import build_model_converters
@@ -397,7 +397,11 @@ class Trainer(torch.distributed.checkpoint.stateful.Stateful):
         )
 
         # Note we ignore loss_fn from train spec because we hardcode the perdomainloss in this repo.
-        self.per_domain_loss_module = PerDomainLoss(device=self.device) 
+        self.per_domain_loss_module = PerDomainLoss(device=self.device)
+        if job_config.training.compile:
+            logger.info("compiling per domain loss module")
+            self.per_domain_loss_module = torch.compile(self.per_domain_loss_module)
+            logger.info("compiled.")
 
         # move sharded model to CPU/GPU and initialize weights via DTensor
         if job_config.checkpoint.create_seed_checkpoint:
