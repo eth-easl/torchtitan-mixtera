@@ -15,7 +15,9 @@ from torch._subclasses.fake_tensor import FakeTensorMode
 from torch.distributed._tools.fsdp2_mem_tracker import FSDPMemTracker
 from torch.testing._internal.distributed.fake_pg import FakeStore
 
-from torchtitan.components.optimizer import build_lr_schedulers, build_optimizers
+from torchtitan.components.ft import init_ft_manager
+from torchtitan.components.lr_scheduler import build_lr_schedulers
+from torchtitan.components.optimizer import build_optimizers
 from torchtitan.config_manager import JobConfig
 from torchtitan.distributed import ParallelDims, utils as dist_utils
 from torchtitan.protocols.model_converter import build_model_converters
@@ -36,19 +38,20 @@ def estimate_memory(job_config: JobConfig):
         logger.info("Compiled RMSNorm is not supported yet. Switching to RMSNorm.")
         job_config.model.norm_type = "rmsnorm"
 
-    if job_config.training.compile or job_config.experimental.enable_compiled_autograd:
+    if job_config.training.compile or job_config.parallelism.enable_compiled_autograd:
         logger.info("Compile mode is not supported yet. Switching to eager mode.")
         job_config.training.compile = False
-        job_config.experimental.enable_compiled_autograd = False
+        job_config.parallelism.enable_compiled_autograd = False
 
+    parallelism_config = job_config.parallelism
     parallel_dims = ParallelDims(
-        dp_shard=job_config.training.data_parallel_shard_degree,
-        dp_replicate=job_config.training.data_parallel_replicate_degree,
-        cp=job_config.experimental.context_parallel_degree,
-        tp=job_config.training.tensor_parallel_degree,
-        pp=job_config.experimental.pipeline_parallel_degree,
+        dp_shard=parallelism_config.data_parallel_shard_degree,
+        dp_replicate=parallelism_config.data_parallel_replicate_degree,
+        cp=parallelism_config.context_parallel_degree,
+        tp=parallelism_config.tensor_parallel_degree,
+        pp=parallelism_config.pipeline_parallel_degree,
         world_size=world_size,
-        enable_loss_parallel=not job_config.training.disable_loss_parallel,
+        enable_loss_parallel=not parallelism_config.disable_loss_parallel,
     )
 
     # only FSDP and HSDP are supported
@@ -79,11 +82,11 @@ def estimate_memory(job_config: JobConfig):
     world_mesh = parallel_dims.build_mesh(device_type="cuda")
 
     # build tokenizer
-    tokenizer = train_spec.tokenizer_cls(job_config.model.tokenizer_path)
+    tokenizer = train_spec.build_tokenizer_fn(job_config)
 
     train_context = dist_utils.get_train_context(
         parallel_dims.loss_parallel_enabled,
-        job_config.experimental.enable_compiled_autograd,
+        job_config.parallelism.enable_compiled_autograd,
     )
 
     # build model (using meta init)
@@ -102,7 +105,6 @@ def estimate_memory(job_config: JobConfig):
         if not job_config.memory_estimation.disable_fake_mode
         else contextlib.nullcontext()
     ):
-
         logger.info(
             f"Building {train_spec.name} {job_config.model.flavor} with {model_config}"
         )
@@ -122,7 +124,8 @@ def estimate_memory(job_config: JobConfig):
         model.train()
 
         # build optimizer after applying parallelisms to the model
-        optimizers = build_optimizers([model], job_config)
+        ft_manager = init_ft_manager(job_config)
+        optimizers = build_optimizers([model], job_config, ft_manager)
         lr_schedulers = build_lr_schedulers(optimizers.optimizers, job_config)
         # Post optimizer step model converters hook.
         # e.g. calculate float8 dynamic amax/scale for all-parameter for FSDP2

@@ -5,15 +5,13 @@
 # LICENSE file in the root directory of this source tree.
 
 import gc
-import importlib
-import os
 import subprocess
-import sys
 import time
 from dataclasses import dataclass
 from typing import Optional
 
 import torch
+import torch.nn as nn
 from torch._utils import _get_available_device_type, _get_device_module
 
 from torchtitan.tools.logging import logger
@@ -49,10 +47,14 @@ class GarbageCollection:
         logger.info("[GC] %s %.2f seconds.", reason, time.monotonic() - begin)
 
 
-def get_num_params(model: torch.nn.Module, exclude_embedding: bool = False) -> int:
+def get_num_params(model: nn.Module, exclude_embedding: bool = False) -> int:
     num_params = sum(p.numel() for p in model.parameters())
     if exclude_embedding:
-        num_params -= sum(p.numel() for p in model.tok_embeddings.parameters())
+        num_params -= sum(
+            sum(p.numel() for p in m.parameters())
+            for m in model.children()
+            if isinstance(m, nn.Embedding)
+        )
     return num_params
 
 
@@ -74,7 +76,7 @@ def get_num_flop_per_token(num_params: int, model_config, seq_len) -> int:
     return flop_per_token
 
 
-# hardcoded BF16 type peak flops for NVIDIA A100, H100, and H200 GPU
+# hardcoded BF16 type peak flops for NVIDIA A100, H100, H200 GPU and AMD MI250, MI300X and AMD MI325X
 def get_peak_flops(device_name: str) -> int:
     try:
         # Run the lspci command and capture the output
@@ -104,6 +106,13 @@ def get_peak_flops(device_name: str) -> int:
     elif "H200" in device_name:
         # data from https://www.nvidia.com/en-us/data-center/h200/
         return 989e12
+    elif "MI300X" in device_name or "MI325X" in device_name:
+        # MI300X data from https://www.amd.com/en/products/accelerators/instinct/mi300/mi300x.html
+        # MI325X data from https://www.amd.com/en/products/accelerators/instinct/mi300/mi325x.html
+        return 1300e12
+    elif "MI250X" in device_name:
+        # data from https://www.amd.com/en/products/accelerators/instinct/mi200/mi250x.html (per GCD)
+        return 191.5e12
     else:  # for other GPU types, assume A100
         logger.warning(f"Peak flops undefined for: {device_name}, fallback to A100")
         return 312e12
@@ -152,36 +161,3 @@ def check_if_feature_in_pytorch(
             f"{min_nightly_version}. Please upgrade a newer version to include the "
             f"change in ({pull_request_link}) for correct {feature_name}."
         )
-
-
-def import_module_from_path(path: str):
-    path = os.path.expanduser(path)
-
-    # 1. Check if path is an existing file or directory path.
-    if os.path.exists(path):
-        if not os.path.isdir(path):
-            raise ImportError(f"Path '{path}' is not a directory.")
-        init_file = os.path.join(path, "__init__.py")
-        if os.path.isfile(init_file):
-            return _import_module_from_init(path)
-
-        raise ImportError(
-            f"Directory '{path}' is not a Python package because it does not "
-            "contain an __init__.py file."
-        )
-
-    # 2. If not a valid path, assume it's a dotted module name.
-    return importlib.import_module(path)
-
-
-def _import_module_from_init(path: str):
-    init_file = os.path.join(path, "__init__.py")
-    module_name = os.path.basename(path)
-    spec = importlib.util.spec_from_file_location(module_name, init_file)
-    if spec is None:
-        raise ImportError(f"Could not create spec from '{init_file}'")
-
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[module_name] = module
-    spec.loader.exec_module(module)
-    return module

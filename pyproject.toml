@@ -1,9 +1,9 @@
 # ---- All project specifications ---- #
 [project]
 name = "torchtitan"
-description = "A native-PyTorch library for large scale LLM training"
+description = "A PyTorch native library for large-scale model training"
 readme = "README.md"
-requires-python = ">=3.8"
+requires-python = ">=3.10"
 license = {file = "LICENSE"}
 authors = [
     { name = "PyTorch Team", email = "packages@pytorch.org" },
@@ -21,7 +21,8 @@ dependencies = [
     "tiktoken",
 
     # Miscellaneous
-    "tomli>=1.1.0"
+    "tomli>=1.1.0",
+    "fsspec"
 ]
 dynamic = ["version"]
 
