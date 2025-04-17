@@ -12,15 +12,12 @@ from torchtitan.datasets.tokenizer import build_tokenizer
 class TestDatasetCheckpointing:
     def test_c4_resumption(self):
         dataset_name = "c4_test"
-        dataset_path = "./tests/assets/c4_test"
         batch_size = 1
         seq_len = 1024
         world_size = 4
         rank = 0
 
-        dl = self._build_dataloader(
-            dataset_name, dataset_path, batch_size, seq_len, world_size, rank
-        )
+        dl = self._build_dataloader(dataset_name, batch_size, seq_len, world_size, rank)
 
         it = iter(dl)
         for _ in range(250):
@@ -29,9 +26,7 @@ class TestDatasetCheckpointing:
         expected_input_ids, expected_labels = next(it)
 
         # Create new dataloader, restore checkpoint, and check if next data yielded is the same as above
-        dl = self._build_dataloader(
-            dataset_name, dataset_path, batch_size, seq_len, world_size, rank
-        )
+        dl = self._build_dataloader(dataset_name, batch_size, seq_len, world_size, rank)
         dl.load_state_dict(state)
         input_ids, labels = next(iter(dl))
 

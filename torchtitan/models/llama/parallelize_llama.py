@@ -19,10 +19,10 @@ from torch.distributed._composable.fsdp import (
     MixedPrecisionPolicy,
 )
 from torch.distributed._composable.replicate import replicate
-from torch.distributed._tensor import Replicate, Shard
 from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import (
     checkpoint_wrapper as ptd_checkpoint_wrapper,
 )
+from torch.distributed.tensor import Replicate, Shard
 from torch.distributed.tensor.parallel import (
     ColwiseParallel,
     parallelize_module,
@@ -32,8 +32,8 @@ from torch.distributed.tensor.parallel import (
 )
 
 from torchtitan.config_manager import JobConfig, TORCH_DTYPE_MAP
-from torchtitan.logging import logger
-from torchtitan.parallelisms import ParallelDims
+from torchtitan.distributed import ParallelDims
+from torchtitan.tools.logging import logger
 
 
 def parallelize_llama(
@@ -56,11 +56,12 @@ def parallelize_llama(
             and not job_config.training.compile
         ):
             raise RuntimeError("Async TP requires --training.compile")
+        enable_float8_linear = "float8" in job_config.model.converters
         apply_tp(
             model,
             world_mesh["tp"],
             loss_parallel=parallel_dims.loss_parallel_enabled,
-            enable_float8=job_config.float8.enable_float8_linear,
+            enable_float8=enable_float8_linear,
             enable_async_tp=job_config.experimental.enable_async_tensor_parallel,
         )
 

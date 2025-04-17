@@ -4,29 +4,33 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
+from datetime import timedelta
 import os
 import time
-from datetime import timedelta
 
 import torch
 import pathlib
 
 from torch.distributed.elastic.multiprocessing.errors import record
 
-from torchtitan import utils
-from torchtitan.checkpoint import CheckpointManager, TrainState
+from torchtitan.components.checkpoint import CheckpointManager, TrainState
 from torchtitan.config_manager import JobConfig
 from torchtitan.datasets import build_hf_data_loader, build_tokenizer
 from torchtitan.datasets.mixtera_datasets import build_mixtera_data_loader
-from torchtitan.float8 import Float8Handler
-from torchtitan.logging import init_logger, logger
-from torchtitan.metrics import build_device_memory_monitor, build_metric_logger
-from torchtitan.models import model_name_to_tokenizer
-from torchtitan.parallelisms import ParallelDims
 from torchtitan.models.llama.model import PerDomainLoss
-from torchtitan.profiling import maybe_enable_memory_snapshot, maybe_enable_profiling
-from torchtitan.train_spec import get_train_spec
-from torchtitan.utils import device_module, device_type, import_module_from_path
+
+from torchtitan.distributed import ParallelDims, utils as dist_utils
+from torchtitan.protocols.model_converter import build_model_converters
+from torchtitan.protocols.train_spec import get_train_spec
+
+from torchtitan.tools import utils
+from torchtitan.tools.logging import init_logger, logger
+from torchtitan.tools.metrics import build_device_memory_monitor, build_metric_logger
+from torchtitan.tools.profiling import (
+    maybe_enable_memory_snapshot,
+    maybe_enable_profiling,
+)
+
 
 from mixtera.torch import MixteraTorchDataset
 from mixtera.core.client import MixteraClient, QueryExecutionArgs, ResultStreamingArgs
@@ -43,11 +47,10 @@ os.environ["NCCL_TIMEOUT"] = str(30 * 60 * 1000)
 # Enable debug tracing on failure: https://pytorch.org/docs/stable/elastic/errors.html
 @record
 def main(job_config: JobConfig):
-    init_logger()
     logger.info(f"Starting job: {job_config.job.description}")
 
     if job_config.experimental.custom_model_path:
-        import_module_from_path(job_config.experimental.custom_model_path)
+        utils.import_module_from_path(job_config.experimental.custom_model_path)
 
     if job_config.job.print_args:
         logger.info(f"Running with args: {job_config.to_dict()}")
@@ -69,9 +72,10 @@ def main(job_config: JobConfig):
         world_size=world_size,
         enable_loss_parallel=not job_config.training.disable_loss_parallel,
     )
+    device_module, device_type = utils.device_module, utils.device_type
     device = torch.device(f"{device_type}:{int(os.environ['LOCAL_RANK'])}")
     device_module.set_device(device)
-    utils.init_distributed(job_config)
+    dist_utils.init_distributed(job_config)
     # initialize device memory monitor and get peak flops for MFU calculation
     device_memory_monitor = build_device_memory_monitor()
     gpu_peak_flops = utils.get_peak_flops(device_memory_monitor.device_name)
@@ -97,7 +101,7 @@ def main(job_config: JobConfig):
         tp_rank = 0
 
     # Set random seed, and maybe enable deterministic mode (mainly for debugging, expect perf loss)
-    utils.set_determinism(
+    dist_utils.set_determinism(
         world_mesh, device, job_config.training.seed, job_config.training.deterministic
     )
     train_spec = get_train_spec(job_config.model.name)
@@ -317,10 +321,9 @@ def main(job_config: JobConfig):
     with torch.device("meta"):
         model = model_cls.from_model_args(model_config)
 
-    # a no-op hander if float8 is not enabled
-    float8_handler = Float8Handler(job_config, parallel_dims)
-    # swap to Float8Linear based on float8 configs
-    float8_handler.convert_to_float8_training(model)
+    # Build the collection of model converters. No-op if `model.converters` empty
+    model_converters = build_model_converters(job_config, parallel_dims)
+    model_converters.convert(model)
 
     # log model size
     model_param_count = utils.get_num_params(model)
@@ -334,19 +337,8 @@ def main(job_config: JobConfig):
         f"{color.red}size: {model_param_count:,} total parameters{color.reset}"
     )
 
-    # loss function to be shared by Pipeline Parallel and SPMD training
-    #def loss_fn(pred, labels):
-    #    return torch.nn.functional.cross_entropy(
-    #        pred.flatten(0, 1).float(), labels.flatten(0, 1)
-    #    )
-
+    # Note we ignore loss_fn from train spec because we hardcode the perdomainloss in this repo.
     per_domain_loss_module = PerDomainLoss(device=device) 
-
-    # TODO: compiling loss function causes CUDA errors, turning off for now
-    # if job_config.training.compile: 
-    #     loss_fn = torch.compile(loss_fn)
-    #if job_config.training.compile: MIXTERA OPTION (above is STANDARD TORCHTITAN)
-    #    per_domain_loss_module = torch.compile(per_domain_loss_module)
 
     # move sharded model to CPU/GPU and initialize weights via DTensor
     if job_config.checkpoint.create_seed_checkpoint:
@@ -369,7 +361,13 @@ def main(job_config: JobConfig):
             has_first_stage,
             has_last_stage,
         ) = train_spec.pipelining_fn(
-            model, pp_mesh, parallel_dims, job_config, device, model_config, loss_fn
+            model,
+            pp_mesh,
+            parallel_dims,
+            job_config,
+            device,
+            model_config,
+            train_spec.loss_fn,
         )
         # when PP is enabled, `model` obj is no longer used after this point, model_parts is used instead
         del model
@@ -404,6 +402,12 @@ def main(job_config: JobConfig):
     # build optimizer after applying parallelisms to the model
     optimizers = train_spec.build_optimizers_fn(model_parts, job_config)
     lr_schedulers = train_spec.build_lr_schedulers_fn(optimizers, job_config)
+    # Post optimizer step model converters hook.
+    # e.g. calculate float8 dynamic amax/scale for all-parameter for FSDP2
+    # where it issues a single all-reduce for all parameters at once for better performance
+    optimizers.register_step_post_hook(
+        lambda *args, **kwargs: model_converters.post_optimizer_hook(model_parts)
+    )
 
     train_state = TrainState()
 
@@ -444,7 +448,7 @@ def main(job_config: JobConfig):
 
     data_iterator = iter(data_loader)
 
-    train_context = utils.get_train_context(
+    train_context = dist_utils.get_train_context(
         parallel_dims.loss_parallel_enabled,
         job_config.experimental.enable_compiled_autograd,
     )
@@ -507,7 +511,7 @@ def main(job_config: JobConfig):
             # apply context parallelism if cp is enabled
             # ensure CP handles the separate freqs_cis buffer for each pp stage
             optional_context_parallel_ctx = (
-                utils.create_context_parallel_ctx(
+                dist_utils.create_context_parallel_ctx(
                     cp_mesh=world_mesh["cp"],
                     cp_buffers=[input_ids, labels] + [m.freqs_cis for m in model_parts],
                     cp_seq_dims=[1, 1] + [0 for _ in model_parts],
@@ -569,7 +573,7 @@ def main(job_config: JobConfig):
                     loss.backward()
 
             # clip gradients
-            utils.clip_grad_norm_(
+            dist_utils.clip_grad_norm_(
                 [p for m in model_parts for p in m.parameters()],
                 job_config.training.max_norm,
                 foreach=True,
@@ -601,11 +605,6 @@ def main(job_config: JobConfig):
                 )
 
                 mixtera_feedback_time = time.perf_counter() - mixtera_feedback_start
-
-            # calculate float8 dynamic amax/scale for all-parameter for FSDP2
-            # it issues a single all-reduce for all parameters at once for better performance
-            float8_handler.precompute_float8_dynamic_scale_for_fsdp(model_parts)
-
             # log metrics
             if (
                 train_state.step == 1
@@ -618,8 +617,8 @@ def main(job_config: JobConfig):
                 ):
                     loss = loss.detach()
                     global_avg_loss, global_max_loss = (
-                        utils.dist_mean(loss, world_mesh["dp_cp"]),
-                        utils.dist_max(loss, world_mesh["dp_cp"]),
+                        dist_utils.dist_mean(loss, world_mesh["dp_cp"]),
+                        dist_utils.dist_max(loss, world_mesh["dp_cp"]),
                     )
                 else:
                     global_avg_loss = global_max_loss = loss.item()
@@ -642,6 +641,7 @@ def main(job_config: JobConfig):
                 # For its definition and calculation, please refer to the PaLM paper:
                 # https://arxiv.org/abs/2204.02311
                 mfu = 100 * num_flop_per_token * tps / gpu_peak_flops
+                tflops = num_flop_per_token * tps / 1e12
 
                 time_end_to_end = time_delta / job_config.metrics.log_freq
                 time_data_loading = sum(data_loading_times) / len(data_loading_times)
@@ -654,6 +654,7 @@ def main(job_config: JobConfig):
                     "loss_metrics/global_max_loss": global_max_loss,
                     "throughput(tps)": tps,
                     "global_tps": global_tps,
+                    "tflops": tflops,
                     "mfu(%)": mfu,
                     "time_metrics/end_to_end(s)": time_end_to_end,
                     "time_metrics/data_loading(s)": time_data_loading,
@@ -674,6 +675,7 @@ def main(job_config: JobConfig):
                         f"{color.yellow}memory: {device_mem_stats.max_reserved_gib:5.2f}GiB"
                         f"({device_mem_stats.max_reserved_pct:.2f}%)  "
                         f"{color.blue}tps: {round(tps):,}  "
+                        f"{color.cyan}tflops: {tflops:,.2f}  "
                         f"timings: init_async_time={init_async_time} wait_mixtera_time={wait_mixtera_time} mixtera_feedback_time={mixtera_feedback_time}  "
                         f"{color.magenta}mfu: {mfu:.2f}%{color.reset}"
                     )
@@ -683,25 +685,25 @@ def main(job_config: JobConfig):
                 time_last_log = time.perf_counter()
                 device_memory_monitor.reset_peak_stats()
 
-                checkpoint_path = checkpoint.save(
-                    train_state.step, force=(train_state.step == job_config.training.steps)
+            checkpoint_path = checkpoint.save(
+                train_state.step, force=(train_state.step == job_config.training.steps)
+            )
+            if checkpoint_path is not None:
+                handle_mixtera_checkpoint(data_loader, pathlib.Path(checkpoint_path), dp_rank, tp_rank, False)
+
+            # signal the profiler that the next profiling step has started
+            if torch_profiler:
+                torch_profiler.step()
+            if memory_profiler:
+                memory_profiler.step()
+
+            # reduce timeout after first train step for faster signal
+            # (assuming lazy init and compilation are finished)
+            if train_state.step == 1:
+                dist_utils.set_pg_timeouts(
+                    timeout=timedelta(seconds=job_config.comm.train_timeout_seconds),
+                    world_mesh=world_mesh,
                 )
-                if checkpoint_path is not None:
-                    handle_mixtera_checkpoint(data_loader, pathlib.Path(checkpoint_path), dp_rank, tp_rank, False)
-
-                # signal the profiler that the next profiling step has started
-                if torch_profiler:
-                    torch_profiler.step()
-                if memory_profiler:
-                    memory_profiler.step()
-
-                # reduce timeout after first train step for faster signal
-                # (assuming lazy init and compilation are finished)
-                if train_state.step == 1:
-                    utils.set_pg_timeouts(
-                        timeout=timedelta(seconds=job_config.comm.train_timeout_seconds),
-                        world_mesh=world_mesh,
-                    )
 
     if torch.distributed.get_rank() == 0:
         logger.info("Sleeping 2 seconds for other ranks to complete")
@@ -712,6 +714,7 @@ def main(job_config: JobConfig):
 
 
 if __name__ == "__main__":
+    init_logger()
     config = JobConfig()
     config.parse_args()
     main(config)

@@ -5,10 +5,10 @@
 # LICENSE file in the root directory of this source tree.
 
 from torchtitan.datasets.tokenizer.tiktoken import TikTokenizer
-from torchtitan.datasets.tokenizer.tokenizer import Tokenizer
+from torchtitan.datasets.tokenizer import Tokenizer
 from torchtitan.datasets.tokenizer.huggingface import HuggingFaceTokenizer
 
-from torchtitan.logging import logger
+from torchtitan.tools.logging import logger
 
 
 def build_tokenizer(tokenizer_type: str, tokenizer_path: str) -> Tokenizer:
@@ -18,3 +18,4 @@ def build_tokenizer(tokenizer_type: str, tokenizer_path: str) -> Tokenizer:
     else:
         logger.info(f"Building {tokenizer_type} tokenizer using huggingface")
         return HuggingFaceTokenizer(tokenizer_type)
+
