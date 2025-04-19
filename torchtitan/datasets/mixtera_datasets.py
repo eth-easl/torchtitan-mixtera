@@ -3,9 +3,8 @@ from mixtera.torch import MixteraTorchDataset
 
 import torch
 from torch.utils.data import DataLoader
-from torchtitan import utils
-from torchtitan.logging import logger
-
+from torchtitan.distributed import utils
+from torchtitan.tools.logging import logger
 
 class MixteraWrapper(torch.utils.data.IterableDataset):
     def __init__(self, torch_ds: MixteraTorchDataset, return_key_id: bool):

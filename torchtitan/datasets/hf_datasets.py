@@ -310,3 +310,5 @@ def build_hf_data_loader(
         dataset_name, dataset_path, tokenizer, seq_len, world_size, rank, add_bos, add_eos, infinite
     )
     return DPAwareDataLoader(rank, hf_ds, batch_size=batch_size, world_size=world_size, num_workers=num_workers)
+
+build_hf_dataloader = build_hf_data_loader
