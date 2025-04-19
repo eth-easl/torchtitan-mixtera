@@ -1,9 +1,8 @@
 from transformers import AutoTokenizer
 from typing import List, Optional, Union
 
-from torchtitan.datasets.tokenizer.tokenizer import Tokenizer
-from torchtitan.logging import logger
-
+from torchtitan.components.tokenizer import Tokenizer
+from torchtitan.tools.logging import logger
 
 class HuggingFaceTokenizer(Tokenizer):
     def __init__(self, tokenizer_path: str):

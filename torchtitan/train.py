@@ -27,7 +27,7 @@ from torchtitan.components.metrics import (
     ensure_pp_loss_visible,
 )
 from torchtitan.config_manager import JobConfig
-from torchtitan.datasets import build_hf_data_loader, build_tokenizer
+from torchtitan.datasets import build_hf_data_loader
 from torchtitan.datasets.mixtera_datasets import build_mixtera_data_loader
 from torchtitan.models.llama3.model import PerDomainLoss
 
@@ -49,6 +49,9 @@ from mixtera.core.query.mixture.dynamic_mixture import DynamicMixture
 from mixtera.core.algo.ado.ado import AdoDynamicMixing
 from mixtera.utils.feedback import handle_mixtera_feedback
 from mixtera.utils.checkpoint import handle_mixtera_checkpoint
+
+from torchtitan.datasets.tokenizer.huggingface import HuggingFaceTokenizer
+from torchtitan.datasets.tokenizer.tiktoken import TikTokenizer
 
 # Query execution in Mixtera takes long, and NCCL would time out otherwise.
 os.environ["NCCL_TIMEOUT"] = str(30 * 60 * 1000)
@@ -281,12 +284,16 @@ class Trainer(torch.distributed.checkpoint.stateful.Stateful):
                 MixtureKey({"pile_set_name": ["Enron Emails"]}): 0.0030,
             })
 
-            mixture_ado = DynamicMixture(strict=False, chunk_size=chunk_size, initial_mixture=mixture_pile_static, mixing_alg=AdoDynamicMixing(gamma2=0.1, count_normalizer=job_config.training.seq_len, use_same_step_size=True, delta_min=0.01, subsampling_interval=10, scaling_law_update_interval=1000, ignore_initial_steps=500, start_step=1000, logging_path=f"/capstor/store/cscs/swissai/a09/mixtera/adologs/{job_id}_seqfix.json", variant="vanilla"))
-            
+            mixture_ado_nat = DynamicMixture(strict=False, chunk_size=chunk_size, initial_mixture=mixture_pile_static, mixing_alg=AdoDynamicMixing(gamma2=0.1, count_normalizer=job_config.training.seq_len, use_same_step_size=True, delta_min=0.01, subsampling_interval=10, scaling_law_update_interval=1000, ignore_initial_steps=500, start_step=1000, logging_path=f"/capstor/store/cscs/swissai/a09/mixtera/adologs/{job_id}_seqfix.json", variant="vanilla"))
+
+            mixture_ado_def = DynamicMixture(strict=False, chunk_size=chunk_size, initial_mixture=mixture_pile_default, mixing_alg=AdoDynamicMixing(gamma2=0.1, count_normalizer=job_config.training.seq_len, use_same_step_size=True, delta_min=0.01, subsampling_interval=10, scaling_law_update_interval=1000, ignore_initial_steps=500, start_step=1000, logging_path=f"/capstor/store/cscs/swissai/a09/mixtera/adologs/{job_id}_seqfix.json", variant="vanilla"))            
+
             # Set this to the mixture you want to use.
-            if job_config.mixtera.pile == "ado":
-                mixture = mixture_ado
-                logger.info("Using ADO mixture")
+            if job_config.mixtera.pile in {"ado", "ado_natural", "ado_nat"}:
+                mixture = mixture_ado_nat
+                logger.info("Using ADO mixture with initial natural")
+            elif job_config.mixtera.pile in {"ado_def", "ado_default"}:
+                mixture = mixture_ado_def
             elif job_config.mixtera.pile == "default":
                 mixture = mixture_pile_default
                 logger.info("Using default mixture")
@@ -335,7 +342,13 @@ class Trainer(torch.distributed.checkpoint.stateful.Stateful):
             if vocab_size < 1:
                 raise RuntimeError(f"You did not provide mixtera.vocab_size!")
         elif dataloader_str in {"huggingface", "hf"}:
-            tokenizer = build_tokenizer(job_config.training.tokenizer, job_config.model.tokenizer_path)
+            tokenizer_type = job_config.training.tokenizer
+            if tokenizer_type == "tiktoken":
+                logger.info(f"Building {tokenizer_type} tokenizer locally from {job_config.model.tokenizer_path}")
+                tokenizer = TikTokenizer(job_config.model.tokenizer_path)
+            else:
+                logger.info(f"Building {tokenizer_type} tokenizer using huggingface")
+                tokenizer = HuggingFaceTokenizer(tokenizer_type)
             # build dataloader
             streaming = not job_config.hf.disable_streaming
             self.dataloader = build_hf_data_loader(

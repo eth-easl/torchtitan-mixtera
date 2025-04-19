@@ -462,17 +462,8 @@ class CheckpointManager:
                 )
                 self.sending_to_checkpoint_mp = False
 
-    def _find_load_step(self, folder: str = "") -> int:
-        """Find the step to load the checkpoint for.
-
-        Args:
-            folder (str, optional): The folder to find the checkpoint for. If ``folder``
-            is "", then ``self.folder`` will be used.
-
-        Returns:
-            int: The step to load the checkpoint for.
-        """
-        folder = folder if folder else self.folder
+    @staticmethod
+    def _get_max_step(folder: str) -> int:
         pattern = r"step-(\d+)"
         step_counts = []
 
@@ -487,6 +478,19 @@ class CheckpointManager:
         if not step_counts:
             return -1
         return max(step_counts)
+
+    def _find_load_step(self, folder: str = "") -> int:
+        """Find the step to load the checkpoint for.
+
+        Args:
+            folder (str, optional): The folder to find the checkpoint for. If ``folder``
+            is "", then ``self.folder`` will be used.
+
+        Returns:
+            int: The step to load the checkpoint for.
+        """
+        folder = folder if folder else self.folder
+        return CheckpointManager._get_max_step(folder)
 
     def _ft_folder(self) -> str:
         return os.path.join(self.folder, f"ft-replicat-{self.ft_replica_id}")
