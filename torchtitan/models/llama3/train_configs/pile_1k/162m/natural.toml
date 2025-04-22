@@ -41,7 +41,7 @@ batch_size = 64
 seq_len = 2048
 max_norm = 1.0  # grad norm clipping
 steps = 30000 # 30k steps because ADO paper uses 1024 context length
-compile = true # try=
+compile = false # segfaults on the small model...
 dataset = ""
 seed = 1234
 dl_worker = 4
