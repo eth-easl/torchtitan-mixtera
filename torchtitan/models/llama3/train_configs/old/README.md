@@ -1,0 +1,1 @@
+These configs were used in the initial version of the paper. They need some updating (e.g., to reflect the lr warmup steps or parallelism config) if we want to continue to use them.
