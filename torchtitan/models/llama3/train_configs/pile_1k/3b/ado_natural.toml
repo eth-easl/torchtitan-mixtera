@@ -79,7 +79,7 @@ init_timeout_seconds = 3600
 train_timeout_seconds = 3600
 
 [mixtera]
-vocab_size = 50432
+vocab_size = 128356
 job_id = "torchtitan_pile1k_3b_ado_natural"
 chunk_size = 512
 tunnel_via_server = false
