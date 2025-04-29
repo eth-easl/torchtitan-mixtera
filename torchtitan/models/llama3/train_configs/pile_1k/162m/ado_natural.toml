@@ -1,0 +1,87 @@
+# torchtitan Config.toml
+
+[job]
+dump_folder = "/iopsstor/scratch/cscs/mbther/ado/torchtitan-outputs/pile_1k/162m/ado_natural"
+description = "Torchtitan Pile 1k 162m ADO Natural"
+
+[profiling]
+enable_profiling = false
+save_traces_folder = "profile_trace"
+profile_freq = 10
+enable_memory_snapshot = false
+save_memory_snapshot_folder = "memory_snapshot"
+
+[metrics]
+log_freq = 1
+enable_color_printing = true
+enable_tensorboard = false
+save_tb_folder = "tb"
+enable_wandb = true
+wandb_project = "ado_experiments"
+wandb_run_name = "ado 162m ado mixture natural"
+
+[model]
+name = "llama3"
+flavor = "smollm162m"
+norm_type = "rmsnorm"  # layernorm / np_layernorm / rmsnorm / fused_rmsnorm
+tokenizer_path = ""
+
+[optimizer]
+name = "AdamW"
+lr = 0.001
+fused = true
+
+[lr_scheduler]
+warmup_steps = 500
+decay_ratio = 0.1
+decay_type = "linear"
+
+[training]
+batch_size = 64
+seq_len = 2048
+max_norm = 1.0  # grad norm clipping
+steps = 30000 # 30k steps because ADO paper uses 1024 context length
+compile = false # segfaults on the small model...
+dataset = ""
+seed = 1234
+dl_worker = 4
+dataloader = "mixtera"
+tokenizer = "EleutherAI/gpt-neox-20b"
+add_eos = true
+add_bos = false
+
+[parallelism]
+data_parallel_replicate_degree = 16
+data_parallel_shard_degree = -1
+context_parallel_degree = 1
+pipeline_parallel_degree = 1
+enable_async_tensor_parallel = false
+tensor_parallel_degree = 1
+
+[checkpoint]
+enable_checkpoint = true
+folder = "checkpoint"
+interval = 2500
+model_weights_only = false
+export_dtype = "float32"
+async_mode = "disabled"  # ["disabled", "async", "async_with_pinned_mem"]
+keep_latest_k = 0
+
+[activation_checkpoint]
+mode = 'selective'  # ['none', 'selective', 'full']
+selective_ac_option = '2'  # 'int' = ac every positive int layer or 'op', ac based on ops policy
+
+[float8]
+enable_float8_linear = false
+
+[comm]
+init_timeout_seconds = 3600
+train_timeout_seconds = 3600
+
+[mixtera]
+vocab_size = 50432
+job_id = "torchtitan_pile1k_162m_ado_natural"
+chunk_size = 512
+tunnel_via_server = false
+chunk_reading_degree_of_parallelism = 1
+pile = "ado_natural"
