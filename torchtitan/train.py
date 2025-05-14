@@ -684,7 +684,7 @@ class Trainer(torch.distributed.checkpoint.stateful.Stateful):
             mixtera_feedback_time = time.perf_counter() - mixtera_feedback_start
 
         # log metrics
-        if not self.metrics_processor.should_log(self.step) or self.job_config.metrics.disable_console_log:
+        if not self.metrics_processor.should_log(self.step):
             return
 
         if (

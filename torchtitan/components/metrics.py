@@ -394,17 +394,18 @@ class MetricsProcessor:
 
         self.logger.log(metrics, step)
 
-        color = self.color
-        logger.info(
-            f"{color.red}step: {step:2}  "
-            f"{color.green}loss: {global_avg_loss:7.4f}  "
-            f"{color.yellow}memory: {device_mem_stats.max_reserved_gib:5.2f}GiB"
-            f"({device_mem_stats.max_reserved_pct:.2f}%)  "
-            f"{color.blue}tps: {round(tps):,}  "
-            f"{color.cyan}tflops: {tflops:,.2f}  "
-            f"{color.magenta}mfu: {mfu:.2f}%{color.reset}"
-            f"timings: init_async_time={init_async_time} wait_mixtera_time={wait_mixtera_time} mixtera_feedback_time={mixtera_feedback_time}  "
-        )
+        if not self.job_config.metrics.disable_console_log:
+            color = self.color
+            logger.info(
+                f"{color.red}step: {step:2}  "
+                f"{color.green}loss: {global_avg_loss:7.4f}  "
+                f"{color.yellow}memory: {device_mem_stats.max_reserved_gib:5.2f}GiB"
+                f"({device_mem_stats.max_reserved_pct:.2f}%)  "
+                f"{color.blue}tps: {round(tps):,}  "
+                f"{color.cyan}tflops: {tflops:,.2f}  "
+                f"{color.magenta}mfu: {mfu:.2f}%{color.reset}"
+                f"timings: init_async_time={init_async_time} wait_mixtera_time={wait_mixtera_time} mixtera_feedback_time={mixtera_feedback_time}  "
+            )
 
         self.ntokens_since_last_log = 0
         self.data_loading_times.clear()
