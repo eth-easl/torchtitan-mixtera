@@ -347,6 +347,7 @@ class MetricsProcessor:
         global_avg_loss: float,
         global_max_loss: float,
         init_async_time: float, wait_mixtera_time: float, mixtera_feedback_time: float,
+        dp_degree: int,
         extra_metrics: dict[str, Any] | None = None,
     ):
         assert self.num_flops_per_token > 0, "num_flops_per_token must be set"
@@ -363,6 +364,8 @@ class MetricsProcessor:
         mfu = 100 * self.num_flops_per_token * tps / self.gpu_peak_flops
         tflops = self.num_flops_per_token * tps / 1e12
 
+        global_tps = (self.ntokens_since_last_log * dp_degree) / time_delta
+
         time_end_to_end = time_delta / self.job_config.metrics.log_freq
         time_data_loading = sum(self.data_loading_times) / len(self.data_loading_times)
         time_data_loading_pct = 100 * sum(self.data_loading_times) / time_delta
@@ -373,6 +376,7 @@ class MetricsProcessor:
             "loss_metrics/global_avg_loss": global_avg_loss,
             "loss_metrics/global_max_loss": global_max_loss,
             "throughput(tps)": tps,
+            "global_tps": global_tps,
             "tflops": tflops,
             "mfu(%)": mfu,
             "time_metrics/end_to_end(s)": time_end_to_end,

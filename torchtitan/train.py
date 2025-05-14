@@ -700,7 +700,7 @@ class Trainer(torch.distributed.checkpoint.stateful.Stateful):
         else:
             global_avg_loss = global_max_loss = loss.detach().item()
 
-        self.metrics_processor.log(self.step, global_avg_loss, global_max_loss, init_async_time, wait_mixtera_time, mixtera_feedback_time)
+        self.metrics_processor.log(self.step, global_avg_loss, global_max_loss, init_async_time, wait_mixtera_time, mixtera_feedback_time, self.dp_degree)
 
     @record
     def train(self):
