@@ -5,7 +5,9 @@
 # LICENSE file in the root directory of this source tree.
 
 from torchtitan.datasets.hf_datasets import build_hf_data_loader
+from torchtitan.datasets.mosaic_datasets import build_mosaic_data_loader
 
 __all__ = [
     "build_hf_data_loader",
+    "build_mosaic_data_loader"
 ]

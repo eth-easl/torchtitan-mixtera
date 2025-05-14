@@ -35,8 +35,8 @@ def _load_bm_dataset(dataset_path: str, streaming: bool, ext: str):
     return load_dataset(dataset_path, streaming=streaming, data_files=[f"*.{ext}"], split="train")
 
 def _process_bm_text(sample: Dict[str, Any]) -> str:
-    return sample["text"]
-
+    # works for both json and webdataset
+    return sample["text"] if "text" in sample else sample["txt"]
 
 @dataclass
 class DatasetConfig:
@@ -69,6 +69,11 @@ DATASETS = {
         text_processor=_process_bm_text,
     ),
     "benchmark_jsonlzst": DatasetConfig(
+        path="/iopsstor/scratch/cscs/mbther/benchmark_data/jsonl.zst",
+        loader=lambda path, streaming: _load_bm_dataset(path, streaming, "jsonl.zst"),
+        text_processor=_process_bm_text,
+    ),
+    "benchmark_jsonl.zst": DatasetConfig(
         path="/iopsstor/scratch/cscs/mbther/benchmark_data/jsonl.zst",
         loader=lambda path, streaming: _load_bm_dataset(path, streaming, "jsonl.zst"),
         text_processor=_process_bm_text,

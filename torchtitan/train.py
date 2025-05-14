@@ -19,6 +19,7 @@ import torch
 from torch.distributed.elastic.multiprocessing.errors import record
 
 import torchtitan.components.ft as ft
+from torchtitan.datasets.mosaic_datasets import build_mosaic_data_loader
 import torchtitan.protocols.train_spec as train_spec_module
 
 from torchtitan.components.checkpoint import CheckpointManager
@@ -365,6 +366,17 @@ class Trainer(torch.distributed.checkpoint.stateful.Stateful):
                 job_config.training.add_eos
             )
             vocab_size = tokenizer.n_words
+        elif dataloader_str in {"mosaic", "mosiac"}:
+            tokenizer_type = job_config.training.tokenizer
+            if tokenizer_type == "tiktoken":
+                logger.info(f"Building {tokenizer_type} tokenizer locally from {job_config.model.tokenizer_path}")
+                tokenizer = TikTokenizer(job_config.model.tokenizer_path)
+            else:
+                logger.info(f"Building {tokenizer_type} tokenizer using huggingface")
+                tokenizer = HuggingFaceTokenizer(tokenizer_type)
+            # Currently not dp-aware.
+            self.dataloader = build_mosaic_data_loader(job_config.training.dataset_path, tokenizer, job_config.training.batch_size, job_config.training.seq_len, job_config.training.dl_worker, job_config.training.add_bos, job_config.training.add_eos)
+            vocab_size = tokenizer.n_words
         else:
             raise RuntimeError(f"Unknown dataloader: {job_config.training.dataloader}")
 
@@ -688,7 +700,7 @@ class Trainer(torch.distributed.checkpoint.stateful.Stateful):
         else:
             global_avg_loss = global_max_loss = loss.detach().item()
 
-        self.metrics_processor.log(self.step, global_avg_loss, global_max_loss, init_async_time, wait_mixtera_time, mixtera_feedback_time)
+        self.metrics_processor.log(self.step, global_avg_loss, global_max_loss, init_async_time, wait_mixtera_time, mixtera_feedback_time, self.dp_degree)
 
     @record
     def train(self):
