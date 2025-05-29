@@ -1,12 +1,21 @@
+import logging
 from transformers import AutoTokenizer
 from typing import List, Optional, Union
 
 from torchtitan.components.tokenizer import Tokenizer
 from torchtitan.tools.logging import logger
+from tenacity import retry, stop_after_attempt, wait_random_exponential, after_log, before_log
 
 class HuggingFaceTokenizer(Tokenizer):
+    @retry( # instantiating huggingface in CSCS is flaky.
+        stop=stop_after_attempt(5),
+        wait=wait_random_exponential(multiplier=1, min=2, max=60),
+        before=before_log(logger, logging.ERROR),
+        after=after_log(logger, logging.ERROR),
+        reraise=True,
+    )
     def __init__(self, tokenizer_path: str):
-        super().__init__(tokenizer_path)
+        super().__init__()
         # Load the tokenizer
         self.tokenizer = AutoTokenizer.from_pretrained(tokenizer_path, use_fast=True)
         self._n_words = max(self.tokenizer.vocab_size, len(self.tokenizer)) + 100
