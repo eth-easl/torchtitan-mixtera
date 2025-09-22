@@ -288,6 +288,28 @@ class Trainer(torch.distributed.checkpoint.stateful.Stateful):
             mixture_ado_nat = DynamicMixture(strict=False, chunk_size=chunk_size, initial_mixture=mixture_pile_static, mixing_alg=AdoDynamicMixing(gamma2=0.1, count_normalizer=job_config.training.seq_len, use_same_step_size=True, delta_min=0.01, subsampling_interval=10, scaling_law_update_interval=1000, ignore_initial_steps=500, start_step=1000, logging_path=f"/capstor/store/cscs/swissai/a09/mixtera/adologs/{job_id}_seqfix.json", variant="vanilla"))
 
             mixture_ado_def = DynamicMixture(strict=False, chunk_size=chunk_size, initial_mixture=mixture_pile_default, mixing_alg=AdoDynamicMixing(gamma2=0.1, count_normalizer=job_config.training.seq_len, use_same_step_size=True, delta_min=0.01, subsampling_interval=10, scaling_law_update_interval=1000, ignore_initial_steps=500, start_step=1000, logging_path=f"/capstor/store/cscs/swissai/a09/mixtera/adologs/{job_id}_seqfix.json", variant="vanilla"))            
+            
+            mixture_experiment_onlycc = StaticMixture(chunk_size=chunk_size, strict=False, mixture={
+                MixtureKey({"pile_set_name": ["Pile-CC"]}): 1,
+            })
+
+            mixture_experiment_ccarxiv = StaticMixture(chunk_size=chunk_size, strict=False, mixture={
+                MixtureKey({"pile_set_name": ["Pile-CC"]}): 0.5,
+                MixtureKey({"pile_set_name": ["ArXiv"]}): 0.5,
+            })
+
+            mixture_experiment_books = StaticMixture(chunk_size=chunk_size, strict=False, mixture={
+                MixtureKey({"pile_set_name": ["Books3"]}): 1,
+            })
+
+            mixture_experiment_small = StaticMixture(chunk_size=chunk_size, strict=False, mixture={
+                MixtureKey({"pile_set_name": ["Enron Emails"]}): 0.2,
+                MixtureKey({"pile_set_name": ["NIH ExPorter"]}): 0.2,
+                MixtureKey({"pile_set_name": ["PhilPapers"]}): 0.2,
+                MixtureKey({"pile_set_name": ["EuroParl"]}): 0.2,
+                MixtureKey({"pile_set_name": ["USPTO Backgrounds"]}): 0.2,
+            })
+
 
             # Set this to the mixture you want to use.
             if job_config.mixtera.pile in {"ado", "ado_natural", "ado_nat"}:
@@ -301,6 +323,22 @@ class Trainer(torch.distributed.checkpoint.stateful.Stateful):
             elif job_config.mixtera.pile == "natural":
                 mixture = mixture_pile_static
                 logger.info("Using natural mixture")
+            elif job_config.mixtera.pile == "exp_onlycc":
+                mixture = mixture_experiment_onlycc
+                logger.info("Using mixture_experiment_onlycc")
+
+            elif job_config.mixtera.pile == "exp_ccarxiv":
+                mixture = mixture_experiment_ccarxiv
+                logger.info("Using mixture_experiment_ccarxiv")
+
+            elif job_config.mixtera.pile == "exp_books":
+                mixture = mixture_experiment_books
+                logger.info("Using mixture_experiment_books")
+
+            elif job_config.mixtera.pile == "exp_small":
+                mixture = mixture_experiment_small
+                logger.info("Using mixture_experiment_small")
+
             else:
                 raise RuntimeError(f"Unknown pie mixture {job_config.mixtera.pile}")
 
